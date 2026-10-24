@@ -639,3 +639,36 @@ Spam now distinguishes those lexical roles. Adjacent string literals still accum
 CPython folds them into one `JoinedStr`, while nested format levels and nested f-strings keep independent maxima. The
 calibration walker no longer counts a tuple used as `Subscript.slice` as a display. After these corrections, all 157
 boundaries matched CPython.
+
+## Region cost profile
+
+`tools/profile_regions.py` instruments a committed snapshot in a temporary checkout,
+leaving production builds free of profiling branches. It samples every sixteenth
+proof, rotates the sampling phase, and subtracts calibrated clock bookkeeping.
+Stage shares are estimates; reports include instrumented wall time to expose
+measurement overhead. Tiny inputs have too much relative overhead for reliable
+stage attribution.
+
+The retained `campaigns/2026-10-24-region-profile/profile.json` measures `a91af29`
+on macOS arm64. Across six standard-library files, successful proofs accounted
+for about 36–54% of measured time, detailed scanning and dispatch for 38–53%, and
+failed proofs for 7–10%. Annotation rescanning was negligible in those files;
+the synthetic annotation workload spent about 76% in child scans. Instrumented
+wall time was 10–14% higher on these modules. These results identify broad cost
+centers, not exact instruction costs or parser-safety evidence.
+
+Keeping a frame's lexer live until an annotation suspends it removes per-token
+state saves and reconstruction. A controlled comparison on `e236a65`, using the
+profiler's `--live-lexer` experiment, reduced the `shutil.py` region check from
+about 150 to 139 microseconds. The current scanner includes this change. Absolute
+results vary between runs; this is a modest improvement, not the desired 10%
+parser-overhead result.
+
+Failed proofs are too small a share to explain the remaining gap. A promising
+next experiment is sharing the downstream parser's lexical pass. Inspection of
+Ruff 0.0.14 shows that its lexer constructor and token-source driver are private;
+public parsed tokens are available only after parsing. A real integration needs
+an early-abort observer plus correct handling of token checkpoints, rewinds,
+re-lexing, and separate quoted-annotation scans. Replaying already parsed tokens
+could estimate a cost floor, but would not demonstrate protection before AST
+construction.

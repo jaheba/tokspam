@@ -252,3 +252,15 @@ python3 tools/benchmark.py \
 
 Use `cargo test --features experimental-regions` to include the region differential and allocation checks.
 The experiment reduces overhead on the tested general modules, but does not meet the 10% target there.
+
+To attribute region-check costs without adding production instrumentation:
+
+```sh
+python3 tools/profile_regions.py --revision HEAD --output /tmp/spam-profile.json
+```
+
+The script builds an offline temporary snapshot and reports sampled proof,
+detailed-scanning, and annotation costs alongside instrumentation overhead.
+Use `--stdlib-file shutil.py` to select modules. `--live-lexer` reproduces the
+historical lexer-lifetime experiment on revision `e236a65`; current revisions
+already retain the lexer until an annotation suspends it.
