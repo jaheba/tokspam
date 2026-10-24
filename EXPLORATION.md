@@ -332,6 +332,59 @@ python3 tools/benchmark.py \
   --output /tmp/spam-performance.json
 ```
 
+### Acceptance-only byte guard prototype (2026-10-24)
+
+The optimized checker was committed as `573d3ca` before this experiment.
+`tools/byte_guard.rs` is a separate experimental implementation used only by benchmarks and tests.
+It does not change the public library's screening path.
+
+The prototype tracks delimiter matching and indentation directly, bounds parser/AST frames by accumulated syntax
+weights, and counts all `elif` occurrences as potentially retained AST depth.
+It avoids building tokens and binary-precedence stacks.
+It counts string prefixes and paired operator bytes conservatively toward the token budget.
+Ordinary literal contents are skipped; possible quoted annotations are proved harmless only when their raw length fits
+the conservative remaining depth budget.
+Interpolated strings, inconclusive depth bounds, optional token-size limits, malformed lexical structure, and sources
+above the default 1 MiB cap fall back to the normal checker.
+Both paths allocate their workspaces once and allocate nothing while checking input.
+
+Seven-sample release medians, with construction excluded and per-input reset included:
+
+| Input | Normal reused checker | Byte guard plus fallback | Proof outcome |
+| --- | ---: | ---: | --- |
+| Tiny expression | 0.03 µs | 0.03 µs | Proved |
+| 80 additions | 1.70 µs | 0.64 µs | Proved |
+| 60 KB flat assignments | 134 µs | 193 µs | Proved |
+| `shutil.py` | 167 µs | 186 µs | Fallback |
+| 5,000 additions | 2.07 µs | 2.92 µs | Fallback, rejected |
+| `json/decoder.py` | 32.25 µs | 17.11 µs | Proved |
+| `re/__init__.py` | 30.07 µs | 50.08 µs | Fallback |
+
+The 80-addition case is about 8% of Ruff's parse/drop time, but `json/decoder.py` is still about 20%.
+A second prototype charging identifier bytes instead of classifying keywords was tested and discarded: it did not
+improve overall speed and regressed the decoder result.
+
+Coverage checks on the same 2,051 standard-library files proved acceptance for 1,289 files (62.8%).
+The other 762 required fallback and were also accepted by the normal checker.
+In the 83-case retained corpus, six were proved accepted, two were accepted after fallback, and 75 were rejected after
+fallback.
+Every positive proof matched normal checker acceptance.
+Permanent tests exercise 60,000 seeded malformed sources under varied limits, 975 generated family/size/configuration
+combinations, layout boundary cases, and zero-allocation checking of the guard/fallback combination.
+The full test suite and Clippy with warnings denied pass.
+This is experimental compatibility evidence, not a verified bound on downstream parser behavior.
+
+The whole-file prepass is not enabled by default: late fallback can rescan most of a file, and even successful proofs
+can lose to the existing simple-prefix path on flat code.
+The next useful experiment is region-level fallback with reusable state at logical-statement boundaries, so one
+interpolation does not invalidate an otherwise useful scan of a whole module.
+If that cannot materially reduce accepted-module overhead, share lexical work with the downstream parser rather than
+adding another independent full-file pass.
+
+Reproduce the experiment by adding `--byte-guard` to `tools/benchmark.py`.
+The benchmark executable also accepts `--guard` for timed guard/fallback checking and `--guard-probe` to report
+`proved` or `fallback` without timing; positive probe results are asserted against the normal checker.
+
 ## Runtime-generated source
 
 The short outer source `eval('1+' * 1000000 + '1')` passed Spam, CPython parsing, and Ruff parsing.

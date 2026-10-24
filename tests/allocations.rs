@@ -1,3 +1,6 @@
+#[path = "../tools/byte_guard.rs"]
+mod byte_guard;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -114,6 +117,7 @@ fn source_cannot_change_allocation_count_or_size() {
         }
 
         let mut checker = Checker::new(limits.clone());
+        let mut guard = byte_guard::ByteGuard::new(limits.clone());
 
         // Include the first call and reuse after failures: neither may allocate
         // or retain lexer/scanner state from an earlier source.
@@ -124,6 +128,17 @@ fn source_cannot_change_allocation_count_or_size() {
                 "{source:?}",
             );
             assert_eq!(checker.check(source), check(source, &limits));
+            assert_eq!(
+                allocations(|| {
+                    if std::hint::black_box(guard.proves_acceptance(source)) {
+                        Ok(())
+                    } else {
+                        checker.check(source)
+                    }
+                }),
+                Allocations::default(),
+                "prototype guard/fallback allocated for {source:?}",
+            );
         }
     }
 }

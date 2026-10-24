@@ -44,6 +44,7 @@ def main():
     parser.add_argument('--spam-bench', type=Path, required=True)
     parser.add_argument('--ruff-probe', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--byte-guard', action='store_true', help='Measure the experimental byte guard plus fallback')
     parser.add_argument('--baseline', type=Path, help='Previous Spam benchmark binary supporting --reuse')
     parser.add_argument('--stdlib-file', action='append', default=[],
                         help='Additional path relative to the installed Python standard library')
@@ -72,11 +73,21 @@ def main():
             result['baseline_reused'] = rust_ns(args.baseline.resolve(), source, '--reuse')
             if result['baseline_reused']['status'] != spam['status']:
                 raise ValueError(f'{name}: optimization changed screening behavior')
+        guard_summary = ''
+        if args.byte_guard:
+            result['byte_guard'] = rust_ns(args.spam_bench.resolve(), source, '--guard')
+            proof = subprocess.run([str(args.spam_bench.resolve()), '--guard-probe'],
+                                   input=source.encode(), capture_output=True, check=True)
+            result['byte_guard_proved'] = proof.stdout.decode().strip() == 'proved'
+            if result['byte_guard']['status'] != spam['status']:
+                raise ValueError(f'{name}: byte guard changed screening behavior')
+            guard_summary = (f", guard {result['byte_guard']['ns'] / 1000:.2f} µs "
+                             f"({'proved' if result['byte_guard_proved'] else 'fallback'})")
         results.append(result)
         print(f'{name}: Spam {spam["ns"] / 1000:.1f} µs ({spam["status"]}), '
               f'reused {spam_reused["ns"] / 1000:.2f} µs, '
               f'Ruff {ruff["ns"] / 1000:.1f} µs, CPython {cpython / 1000:.1f} µs, '
-              f'screen/parse {spam_reused["ns"] / ruff["ns"]:.1%}', flush=True)
+              f'screen/parse {spam_reused["ns"] / ruff["ns"]:.1%}{guard_summary}', flush=True)
     args.output.write_text(json.dumps(results, indent=2) + '\n')
 
 

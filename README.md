@@ -161,3 +161,7 @@ Use repeated `--stdlib-file` options, such as `--stdlib-file dataclasses.py`, to
 The report includes screening time as a fraction of Ruff parsing time; early rejections should be assessed separately
 from accepted-input overhead.
 The measured results and machine details are in [the exploration log](EXPLORATION.md#performance).
+
+`tools/benchmark.py --byte-guard` also measures an experimental acceptance-only byte guard plus fallback to the normal
+checker. This prototype is confined to benchmarks and tests; it is not enabled in the library because late fallback
+can increase total screening time. Its coverage, results, and limitations are recorded in the exploration log.
