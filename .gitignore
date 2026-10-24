@@ -1,0 +1,9 @@
+/target/
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/tools/ruff-probe/target/
+/tools/monty-probe/target/
+__pycache__/
+*.sqlite-wal
+*.sqlite-shm

@@ -1,0 +1,11 @@
+[package]
+name = "spam"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Experimental resource-complexity screening for Python source"
+readme = "README.md"
+publish = false
+
+[dependencies]

@@ -1,0 +1,10 @@
+{
+  "cases": [
+    {
+      "name": "cpython-parser-stack-overflow-minimized",
+      "source": "cpython-parser-stack-overflow.py",
+      "family": "invalid-mixed-minimized",
+      "depth": 170
+    }
+  ]
+}

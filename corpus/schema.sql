@@ -1,0 +1,41 @@
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY,
+    imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    metadata TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cases (
+    id TEXT PRIMARY KEY,
+    source BLOB NOT NULL,
+    family TEXT NOT NULL,
+    depth INTEGER,
+    seed TEXT,
+    first_seen_run INTEGER,
+    FOREIGN KEY (first_seen_run) REFERENCES runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS observations (
+    run_id INTEGER NOT NULL,
+    case_id TEXT NOT NULL,
+    implementation TEXT NOT NULL,
+    status TEXT NOT NULL,
+    seconds REAL,
+    returncode INTEGER,
+    stderr TEXT,
+    PRIMARY KEY (run_id, case_id, implementation),
+    FOREIGN KEY (run_id) REFERENCES runs(id),
+    FOREIGN KEY (case_id) REFERENCES cases(id)
+);
+
+CREATE TABLE IF NOT EXISTS case_labels (
+    case_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    first_seen_run INTEGER,
+    PRIMARY KEY (case_id, label),
+    FOREIGN KEY (case_id) REFERENCES cases(id),
+    FOREIGN KEY (first_seen_run) REFERENCES runs(id)
+);
+
+CREATE INDEX IF NOT EXISTS observations_by_case ON observations(case_id, implementation);
