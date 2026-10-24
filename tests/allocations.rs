@@ -61,6 +61,10 @@ fn allocations(run: impl FnOnce() -> Result<(), Rejection>) -> Allocations {
 fn source_cannot_change_allocation_count_or_size() {
     let sources = [
         String::new(),
+        format!("x = \"{}🦀\"", "literal ".repeat(1000)),
+        format!("x = f\"{}{{value}}\"", "literal ".repeat(1000)),
+        format!("x = {}", vec!["f(x)[0].value * a.b"; 24].join(" + ")),
+        format!("x = (a + b + c){}", ".x".repeat(101)),
         "lambda ".repeat(usize::from(u16::MAX) + 1),
         format!("x: Annotated[int, Doc(\"{}([)]\")]", "word ".repeat(40)),
         format!("x: \"Literal['{}([)]']\"", "word ".repeat(40)),

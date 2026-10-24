@@ -44,6 +44,7 @@ const _: () = assert!(crate::MAX_AST_DEPTH as u32 + 6 <= u16::MAX as u32);
 /// Frames open at one bracket level.
 struct Level {
     kind: LevelKind,
+    postfix: bool,
     /// Prefix operators and `**` right operands: any lower-precedence binary
     /// operator proves they have returned.
     tight: u32,
@@ -59,8 +60,11 @@ struct Level {
     binary_precedences: [u8; 6],
     binary_left_depths: [u16; 6],
     binary_len: u8,
-    binary_depth: u32,
-    ast_loose: u32,
+    expression_depth: u32,
+    // Postfix/grouped height of the current operand, independent of siblings.
+    operand_depth: u32,
+    // Retain the deepest item when commas or closing brackets end a child scan.
+    ast_peak: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -142,7 +146,7 @@ impl Scanner {
         debug_assert!(self.state.statement_start && self.levels.len() == 1);
         let top = &self.levels[0];
         debug_assert!(
-            top.tight == 0 && top.loose == 0 && top.ast_loose == 0 && top.binary_depth == 0
+            top.tight == 0 && top.loose == 0 && top.operand_depth == 0 && top.expression_depth == 0
         );
         if top.pending_lambdas != 0 {
             return None;
@@ -178,8 +182,8 @@ impl Scanner {
             // AST after the corresponding parser frame has returned.
             if self.state.prev_ends_operand {
                 if matches!(kind, Kind::Lpar | Kind::Lsqb | Kind::Dot) {
-                    self.top().ast_loose += 1;
-                    self.state.ast_total += 1;
+                    self.top().operand_depth += 1;
+                    self.refresh_expression_depth();
                 }
                 if let Some(precedence) = binary_precedence(kind) {
                     self.observe_binary(precedence);
@@ -190,7 +194,7 @@ impl Scanner {
         // A later reset must not hide a transient violation from the old pass.
         let ast_exceeded = self.ast_exceeded();
         let exceeded = match kind {
-            Kind::Lpar | Kind::Lsqb => self.push(LevelKind::Bracket),
+            Kind::Lpar | Kind::Lsqb => self.push(LevelKind::Bracket, self.state.prev_ends_operand),
             Kind::Lbrace => {
                 let kind = match self.top().kind {
                     LevelKind::FString | LevelKind::Interpolation { in_spec: true } => {
@@ -200,9 +204,9 @@ impl Scanner {
                     | LevelKind::Bracket
                     | LevelKind::Interpolation { in_spec: false } => LevelKind::Bracket,
                 };
-                self.push(kind)
+                self.push(kind, false)
             }
-            Kind::FStringStart => self.push(LevelKind::FString),
+            Kind::FStringStart => self.push(LevelKind::FString, false),
             Kind::Rpar | Kind::Rsqb | Kind::Rbrace | Kind::FStringEnd => {
                 self.pop();
                 false
@@ -313,6 +317,12 @@ impl Scanner {
         if matches!(kind, Kind::Newline | Kind::Semi) {
             self.state.in_pattern = false;
         }
+        if self.state.ast_limit.is_some() {
+            let top = self.top();
+            top.ast_peak = top
+                .ast_peak
+                .max(top.tight + top.loose + top.expression_depth);
+        }
         if exceeded {
             Some(Reason::Nesting)
         } else if ast_exceeded || self.ast_exceeded() {
@@ -368,8 +378,20 @@ impl Scanner {
             .expect("the bottom level is never popped")
     }
 
-    fn push(&mut self, kind: LevelKind) -> bool {
-        self.levels.push(Level::new(kind));
+    fn push(&mut self, kind: LevelKind, postfix: bool) -> bool {
+        if self.state.ast_limit.is_some() {
+            let parent = self.top();
+            // A child's active path crosses pending operators, not the saved
+            // left subtrees. Those heights were checked before suspension.
+            let saved = parent.expression_depth;
+            // Keep the conservative call/subscript wrapper charge while
+            // descending into arguments; only completed callee height is suspended.
+            let active = u32::from(parent.binary_len) + u32::from(postfix);
+            self.state.ast_total = self.state.ast_total - saved + active;
+        }
+        let mut child = Level::new(kind);
+        child.postfix = postfix;
+        self.levels.push(child);
         self.add(1)
     }
 
@@ -378,7 +400,17 @@ impl Scanner {
             let level = self.levels.pop().expect("length checked above");
             let shared = 1 + level.tight + level.loose;
             self.state.total -= shared;
-            self.state.ast_total -= shared + level.ast_loose + level.binary_depth;
+            self.state.ast_total -= shared + level.expression_depth;
+            if self.state.ast_limit.is_some() {
+                // Closed children still belong to the current operand. Preserve
+                // their peak before a following postfix or binary operator wraps it.
+                let parent = self.top();
+                let saved = parent.expression_depth;
+                let active = u32::from(parent.binary_len) + u32::from(level.postfix);
+                parent.operand_depth = parent.operand_depth.max(1 + level.ast_peak);
+                self.state.ast_total = self.state.ast_total - active + saved;
+                self.refresh_expression_depth();
+            }
         }
     }
 
@@ -403,19 +435,20 @@ impl Scanner {
     fn reset_level(&mut self) {
         let top = self.top();
         let released = top.tight + top.loose;
-        let ast_released = released + top.ast_loose + top.binary_depth;
+        let ast_released = released + top.expression_depth;
         top.tight = 0;
         top.loose = 0;
-        top.binary_depth = 0;
+        top.expression_depth = 0;
         top.binary_len = 0;
-        top.ast_loose = 0;
+        top.operand_depth = 0;
         self.state.total -= released;
         self.state.ast_total -= ast_released;
     }
 
     fn observe_binary(&mut self, precedence: u8) {
         let level = self.top();
-        let mut current = 0;
+        let mut current = level.operand_depth;
+        level.operand_depth = 0;
         // Equal precedence folds left: a + b + c deepens the retained left
         // subtree. Higher precedence must finish before a looser operator.
         while level.binary_precedences[..usize::from(level.binary_len)]
@@ -431,14 +464,21 @@ impl Scanner {
         level.binary_left_depths[index] = u16::try_from(current)
             .expect("binary depth is bounded by the hard AST ceiling plus six folds");
         level.binary_len += 1;
-        // Remaining entries represent unfinished right operands. Fold their
-        // estimated subtrees to recover depth without constructing AST nodes.
+        self.refresh_expression_depth();
+    }
+
+    fn refresh_expression_depth(&mut self) {
+        let level = self.top();
+        // Combine sibling operand heights by maximum rather than adding their
+        // postfix chains. The fixed precedence stack has at most six entries.
         let depth = level.binary_left_depths[..usize::from(level.binary_len)]
             .iter()
             .rev()
-            .fold(0u32, |right, left| u32::from(*left).max(right) + 1);
-        let old_depth = level.binary_depth;
-        level.binary_depth = depth;
+            .fold(level.operand_depth, |right, left| {
+                u32::from(*left).max(right) + 1
+            });
+        let old_depth = level.expression_depth;
+        level.expression_depth = depth;
         self.state.ast_total = self.state.ast_total - old_depth + depth;
     }
 
@@ -459,14 +499,16 @@ impl Level {
     fn new(kind: LevelKind) -> Self {
         Self {
             kind,
+            postfix: false,
             tight: 0,
             loose: 0,
             pending_lambdas: 0,
             binary_precedences: [0; 6],
             binary_left_depths: [0; 6],
             binary_len: 0,
-            binary_depth: 0,
-            ast_loose: 0,
+            expression_depth: 0,
+            operand_depth: 0,
+            ast_peak: 0,
         }
     }
 }
@@ -516,7 +558,31 @@ mod tests {
     }
 
     #[test]
-    fn combined_pass_matches_independent_passes() {
+    fn flat_arithmetic_still_matches_frozen_ast_reference() {
+        for source in [
+            "x = a + b * c - d / e | f ^ g & h << i",
+            "x = a + b + c + d + e + f",
+            "x = a * b + c * d + e * f",
+        ] {
+            for limit in [0, 1, 2, 5, 30] {
+                let mut scanner = Scanner::new(100, Some(limit));
+                let mut reference = reference::Scanner::<true>::new(limit);
+                let mut scratch = LexerScratch::default();
+                for token in Lexer::new(source, 100, 100, &mut scratch) {
+                    let exceeded = reference.observe(token.kind);
+                    let actual = scanner.observe(token.kind);
+                    assert_eq!(actual == Some(Reason::AstDepth), exceeded);
+                    assert_eq!(scanner.ast_total, reference.total);
+                    if exceeded {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn combined_pass_preserves_independent_parser_accounting() {
         let alphabet = [
             "x", "1", "(", ")", "[", "]", "{", "}", "f'", "'", ":", ",", ";", "\n", " ", "+", "-",
             "*", "**", "~", "lambda", "else", "elif", "if", "await", ".", "|", "^", "&", "<<", "/",
@@ -528,7 +594,6 @@ mod tests {
             for ast_limit in [None, Some(0), Some(1), Some(5), Some(30)] {
                 let mut combined = Scanner::new(parser_limit, ast_limit);
                 let mut parser = reference::Scanner::<false>::new(parser_limit);
-                let mut ast = ast_limit.map(reference::Scanner::<true>::new);
                 let mut scratch = LexerScratch::default();
 
                 for _ in 0..500 {
@@ -539,30 +604,20 @@ mod tests {
                     }
                     combined.reset(parser_limit, ast_limit);
                     parser.reset(parser_limit);
-                    if let Some(ast) = &mut ast {
-                        ast.reset(ast_limit.unwrap());
-                    }
 
                     for token in Lexer::new(&source, 30, 30, &mut scratch) {
-                        let expected = if parser.observe(token.kind) {
-                            Some(Reason::Nesting)
-                        } else if ast.as_mut().is_some_and(|ast| ast.observe(token.kind)) {
-                            Some(Reason::AstDepth)
+                        let parser_exceeded = parser.observe(token.kind);
+                        let actual = combined.observe(token.kind);
+                        if parser_exceeded {
+                            assert_eq!(actual, Some(Reason::Nesting), "{source:?}");
+                        } else if ast_limit.is_none() {
+                            assert_eq!(actual, None, "{source:?}");
                         } else {
-                            None
-                        };
-                        assert_eq!(
-                            combined.observe(token.kind),
-                            expected,
-                            "{source:?}: {:?}",
-                            token.kind
-                        );
-                        if expected.is_some() {
-                            break;
+                            assert_ne!(actual, Some(Reason::Nesting), "{source:?}");
                         }
                         assert_eq!(combined.total, parser.total);
-                        if let Some(ast) = &ast {
-                            assert_eq!(combined.ast_total, ast.total);
+                        if actual.is_some() {
+                            break;
                         }
                     }
                 }

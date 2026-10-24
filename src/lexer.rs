@@ -32,6 +32,44 @@ const BYTE_CLASSES: [u8; 256] = {
     classes
 };
 
+// Keep nearby quotes and escapes cheap before using memchr's vectorized search.
+// Delimiters are ASCII, so matches remain UTF-8 boundaries even when a search
+// reads across multibyte characters.
+#[inline(always)]
+fn find_ascii<const N: usize>(text: &[u8], needles: [u8; N]) -> usize {
+    let prefix = text.len().min(8);
+    if let Some(offset) = text[..prefix]
+        .iter()
+        .position(|byte| needles.contains(byte))
+    {
+        return offset;
+    }
+    let tail = &text[prefix..];
+    let found = match needles.as_slice() {
+        [a, b] => memchr::memchr2(*a, *b, tail),
+        [a, b, c] => memchr::memchr3(*a, *b, *c, tail),
+        [a, b, c, d] => {
+            // memchr searches up to three bytes. Bound both searches to a
+            // constant-size block: repeated fourth-byte hits must not cause
+            // rescanning of the entire remaining literal on every escape.
+            let mut offset = 0;
+            for chunk in tail.chunks(64) {
+                let first = memchr::memchr3(*a, *b, *c, chunk).unwrap_or(chunk.len());
+                if let Some(last) = memchr::memchr(*d, &chunk[..first]) {
+                    return prefix + offset + last;
+                }
+                if first < chunk.len() {
+                    return prefix + offset + first;
+                }
+                offset += chunk.len();
+            }
+            None
+        }
+        _ => unreachable!("literal searches use two, three, or four delimiters"),
+    };
+    prefix + found.unwrap_or(tail.len())
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Kind {
     #[default]
@@ -368,20 +406,16 @@ impl<'a, 's> Lexer<'a, 's> {
 
         let inner = self.position;
         while self.position < bytes.len() {
-            // Search literal text in a tight byte loop; only quote candidates
-            // need the more expensive triple-quote delimiter comparison.
             let text = &bytes[self.position..];
-            let special = if width == 1 {
-                text.iter()
-                    .position(|&byte| byte == quote || matches!(byte, b'\\' | b'\n' | b'\r'))
+            let offset = if width == 1 {
+                find_ascii(text, [quote, b'\\', b'\n', b'\r'])
             } else {
-                text.iter().position(|&byte| byte == quote || byte == b'\\')
-            };
-            let Some(offset) = special else {
-                self.position = bytes.len();
-                break;
+                find_ascii(text, [quote, b'\\'])
             };
             self.position += offset;
+            if self.position == bytes.len() {
+                break;
+            }
             let byte = bytes[self.position];
             if byte == quote
                 && (width == 1 || bytes.get(self.position..self.position + 3) == Some(&[quote; 3]))
@@ -421,15 +455,10 @@ impl<'a, 's> Lexer<'a, 's> {
         // Literal text has no structural effect until an ASCII delimiter.
         // Stopping only at ASCII or EOF also preserves UTF-8 boundaries.
         let text_run = match context {
-            Context::Text { quote, .. } => bytes[start..]
-                .iter()
-                .position(|&b| b == quote || matches!(b, b'{' | b'}' | b'\\')),
-            Context::Format => bytes[start..]
-                .iter()
-                .position(|&b| matches!(b, b'{' | b'}' | b'\\')),
-            _ => Some(0),
-        }
-        .unwrap_or(bytes.len() - start);
+            Context::Text { quote, .. } => find_ascii(&bytes[start..], [quote, b'{', b'}', b'\\']),
+            Context::Format => find_ascii(&bytes[start..], *b"{}\\"),
+            _ => 0,
+        };
         if text_run != 0 {
             self.position += text_run;
             return None;
@@ -739,6 +768,79 @@ mod tests {
             assert!(source.is_char_boundary(token.range.end));
         }
         tokens
+    }
+
+    #[test]
+    fn byte_search_matches_scalar_at_every_alignment_and_byte_value() {
+        fn compare<const N: usize>(text: &[u8], needles: [u8; N]) {
+            let scalar = text
+                .iter()
+                .position(|byte| needles.contains(byte))
+                .unwrap_or(text.len());
+            assert_eq!(
+                super::find_ascii(text, needles),
+                scalar,
+                "{text:?}: {needles:?}"
+            );
+        }
+
+        for length in 0..80 {
+            for byte in 0..=u8::MAX {
+                let mut text = vec![byte; length];
+                for position in 0..=length {
+                    if position < length {
+                        text[position] = b'\\';
+                    }
+                    compare(&text, *b"\"\\");
+                    compare(&text, *b"{}\\");
+                    compare(&text, *b"'\\\n\r");
+                    if position < length {
+                        text[position] = byte;
+                    }
+                }
+            }
+        }
+
+        let mut random = 42u64;
+        for length in 0..512 {
+            let text: Vec<_> = (0..length)
+                .map(|_| {
+                    random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    (random >> 32) as u8
+                })
+                .collect();
+            compare(&text, *b"\"\\");
+            compare(&text, *b"{}\\");
+            compare(&text, *b"'\\\n\r");
+        }
+    }
+
+    #[test]
+    fn literal_word_boundaries_preserve_unicode_and_escaped_delimiters() {
+        for padding in 0..40 {
+            for quote in ["'", "\"", "'''", "\"\"\""] {
+                let body = format!("{}🦀π\\{quote}tail", "x".repeat(padding));
+                let source = format!("x = {quote}{body}{quote}\n");
+                let result = tokens(&source);
+                let string = result
+                    .iter()
+                    .find(|token| token.kind == Kind::String)
+                    .unwrap();
+                assert_eq!(string.range, 4..source.len() - 1);
+                assert_eq!(
+                    string.contents,
+                    Some(4 + quote.len()..source.len() - 1 - quote.len())
+                );
+            }
+            for ending in ["\n", "\r", "\r\n", ""] {
+                let source = format!("x = '{}🦀{ending}", "x".repeat(padding));
+                assert!(
+                    tokens(&source)
+                        .iter()
+                        .any(|token| token.kind == Kind::Limit)
+                );
+            }
+        }
     }
 
     #[test]

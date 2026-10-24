@@ -143,6 +143,17 @@ impl Default for Limits {
 }
 
 impl Limits {
+    /// Larger byte and token budgets for screening published package sources.
+    /// Structural limits match `Default`; this is not a parser-safety guarantee.
+    pub fn package_sources() -> Self {
+        Self {
+            max_source_bytes: 8 * 1024 * 1024,
+            max_tokens: 500_000,
+            max_work_units: 8 * 1024 * 1024 + 500_000,
+            ..Self::default()
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         validate_limit(
             self.max_source_bytes,

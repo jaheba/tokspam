@@ -24,6 +24,21 @@ checker.check("y = x[0]")?;
 # Ok::<(), tokspam::Rejection>(())
 ```
 
+For published package sources, opt into larger byte and token budgets with `Limits::package_sources()`:
+
+```rust
+use tokspam::{Checker, Limits};
+
+let mut checker = Checker::new(Limits::package_sources()).expect("valid limits");
+checker.check("x = [1, 2, 3]")?;
+# Ok::<(), tokspam::Rejection>(())
+```
+
+This profile allows 8 MiB source, 500,000 tokens, and 8 MiB + 500,000 cumulative work units.
+It preserves the default parser depth (100), AST depth (100), indentation, annotation, and construct-width settings.
+`Limits::default()` remains unchanged. The profile is a package-compatibility option, not a validated parser-safety
+configuration; hosts must retain deadlines and evaluate their downstream parser and AST pipeline.
+
 `Checker::new` validates configuration and returns `ConfigError` for a value above an implementation
 ceiling.
 `Limits::validate` performs the same check without constructing a checker.
@@ -42,7 +57,9 @@ The one-shot `check` function reports `Reason::Configuration` at `0..0` for inva
 
 The optional AST check counts long binary, attribute, call, and subscript chains that a parser may construct iteratively
 but later destroy recursively.
-Its depth estimate is conservative.
+Its depth estimate is conservative. Binary expressions combine the maximum height of their operand subtrees;
+postfix chains in separate operands are not added together. Closed groups retain their peak height for later
+postfix and binary operators, so grouping cannot erase an already constructed subtree.
 
 A shared structural pass maintains separate parser and AST depth estimates.
 A conservative fast path scans a prefix of short, unindented simple lines without constructing tokens.
@@ -51,6 +68,9 @@ back to detailed scanning.
 
 The lexer handles comments, strings, f-strings, template strings, indentation, and explicit line continuations.
 It retains bounded stacks and scans without storing a token list.
+Literal-text searches use `memchr`, which selects optimized searches for the target platform. A short scalar prefix
+keeps nearby delimiters cheap. Four-delimiter searches use fixed 64-byte blocks to preserve linear behavior when a
+fourth delimiter repeats before the other three. These searches add no heap allocation.
 Scratch storage is reserved before scanning. Its allocation count and capacities depend only on configuration, and
 input cannot grow the buffers, including while scanning nested quoted annotations.
 Quoted annotations are scanned with an explicit preallocated work stack; source structure never adds native Rust stack

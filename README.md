@@ -46,7 +46,11 @@ A rejection includes a reason and a byte range. Reuse one `Checker` per worker:
 construction reserves bounded scratch in shared `Vec` buffers, and scanning
 performs no heap allocations. Buffer sizes follow configured limits, except the
 width tracker reserves its hard capacity for unfinished lambda parameter lists. For a one-off check, use `tokspam::check`.
-The library has no runtime dependencies.
+The sole runtime dependency is `memchr`, used for optimized byte searches.
+
+For larger package files, `Limits::package_sources()` provides 8 MiB source and
+500,000-token budgets while keeping the default structural limits. See
+[configuration](docs/CONFIGURATION.md) for the profile and its scope.
 
 ## Scope
 

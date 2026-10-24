@@ -54,6 +54,13 @@ by the shared token budget). Indentation columns use `u32`; each source byte add
 Compile-time assertions protect these relationships when hard ceilings change. Parser totals, pending lambda counts,
 and depth arithmetic remain `u32`; only bounded saved values are narrowed. Separate precedence and depth arrays avoid
 per-entry tuple padding without changing the six-entry operator stack.
+AST accounting keeps the current operand's postfix height separate from saved binary left operands. A fixed-size
+precedence fold combines subtree heights by maximum plus the operator node. Closing a child level preserves its peak
+height in its parent operand; separators within the child retain the maximum item rather than summing siblings.
+While visiting a child, the parent contributes pending binary ancestors and any conservative postfix wrapper charge,
+instead of adding the already checked heights of sibling left subtrees. The parent expression contribution is restored
+and folded with the child's peak on return. This updates scalar totals without walking the open-level stack.
+The fold examines at most six entries per token, and the extra scalar per structural level does not add allocations.
 Unfinished lambda parameter lists can retain width frames before charging parser depth. Exhausting the fixed width
 buffer returns `Inconclusive`, because a structural violation has not necessarily been established.
 Construction allocates scratch storage before token scanning; scanning performs zero heap allocations. Allocation
@@ -77,6 +84,12 @@ Malformed input follows the same resource limits as valid input.
 Lexer errors, mismatched delimiters, unterminated strings, invalid UTF-8 boundaries in token ranges, and incomplete
 f-strings must not cause a panic, an unbounded loop, or repeated scanning outside the shared budgets.
 All returned byte ranges must be valid boundaries in the input `str`.
+
+Literal-text searches use the safe `memchr` APIs after a short scalar prefix. Tokspam contains no hand-written SIMD
+or unsafe loads. The dependency owns platform-specific acceleration and fallbacks. Searches for four delimiters combine
+`memchr3` and `memchr` within fixed 64-byte blocks: a repeated fourth delimiter cannot trigger unbounded rescanning of
+the remaining literal. Matches are ASCII boundaries or EOF, preserving UTF-8 source ranges. The wrapper allocates
+nothing, does not decode literals, and leaves shared work accounting unchanged.
 
 ## Verification
 

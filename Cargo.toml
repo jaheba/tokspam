@@ -17,3 +17,4 @@ experimental-regions = []
 experimental-width-limits = [] # Compatibility no-op; width limits are always available.
 
 [dependencies]
+memchr = "2.8"

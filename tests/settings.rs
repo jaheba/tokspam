@@ -717,3 +717,114 @@ fn compact_binary_depths_preserve_the_hard_ast_boundary() {
     let mixed = format!("{}1 | 1 ^ 1 & 1 << 1 + 1 * 1 | 1", "1 + ".repeat(count));
     assert_eq!(check(&mixed, &limits).unwrap_err().reason, Reason::AstDepth);
 }
+
+#[test]
+fn sibling_postfix_operands_do_not_accumulate_ast_depth() {
+    for operand in ["A[0, 0]", "f(x)", "a.x", "f(x)[0].value"] {
+        let term = [operand; 4].join(" * ");
+        let source = format!("x = {}", vec![term; 24].join(" + "));
+        let mut checker = Checker::new(Limits::default()).unwrap();
+        assert!(checker.check(&source).is_ok(), "{source}");
+
+        let deep = format!("x = a{}", ".x".repeat(101));
+        assert_eq!(checker.check(&deep).unwrap_err().reason, Reason::AstDepth);
+        assert!(checker.check(&source).is_ok());
+    }
+}
+
+#[test]
+fn postfix_heights_remain_in_left_and_right_binary_operands() {
+    let limits = Limits {
+        max_ast_depth: Some(10),
+        ..Limits::default()
+    };
+    let chain = format!("a{}", ".x".repeat(8));
+    for source in [
+        format!("x = {chain} + b + c + d"),
+        format!("x = a + (b + (c + {chain}))"),
+        format!("x = {chain} + b * c + d + e"),
+        format!("x = (a + b + c){}", ".x".repeat(8)),
+        format!("x = f(a + b + c){}", ".x".repeat(8)),
+        format!("x = a[b + c + d]{}", ".x".repeat(8)),
+    ] {
+        assert_eq!(
+            check(&source, &limits).unwrap_err().reason,
+            Reason::AstDepth,
+            "{source}"
+        );
+    }
+
+    for suffix in [".x", "()", "[0]"] {
+        let source = format!("x = a{}", suffix.repeat(101));
+        assert_eq!(
+            check(&source, &Limits::default()).unwrap_err().reason,
+            Reason::AstDepth
+        );
+    }
+    let arithmetic = format!("x = {}a", "a + ".repeat(101));
+    assert_eq!(
+        check(&arithmetic, &Limits::default()).unwrap_err().reason,
+        Reason::AstDepth
+    );
+}
+
+#[test]
+fn grouped_sibling_subtrees_use_maximum_depth() {
+    let left = vec!["a * b * c * d"; 55].join(" + ");
+    let right = vec!["a * b * c * d * e"; 87].join(" + ");
+    // The division's path enters one operand at a time, not both sums.
+    let source = format!("x = -(({left}) * r) / ({right})");
+    assert!(check(&source, &Limits::default()).is_ok());
+
+    let deep = vec!["a * b * c * d * e"; 105].join(" + ");
+    for source in [
+        format!("x = ({deep}) / ({left})"),
+        format!("x = ({left}) / ({deep})"),
+    ] {
+        assert_eq!(
+            check(&source, &Limits::default()).unwrap_err().reason,
+            Reason::AstDepth
+        );
+    }
+}
+
+#[test]
+fn package_profile_expands_only_source_token_and_work_budgets() {
+    let limits = Limits::package_sources();
+    let defaults = Limits::default();
+    assert!(limits.validate().is_ok());
+    assert_eq!(limits.max_source_bytes, 8 * 1024 * 1024);
+    assert_eq!(limits.max_tokens, 500_000);
+    assert_eq!(
+        limits.max_work_units,
+        limits.max_source_bytes + limits.max_tokens
+    );
+    assert_eq!(limits.max_nesting_depth, defaults.max_nesting_depth);
+    assert_eq!(limits.max_ast_depth, defaults.max_ast_depth);
+    assert_eq!(limits.max_indentation_depth, defaults.max_indentation_depth);
+    assert_eq!(limits.max_annotation_depth, defaults.max_annotation_depth);
+    assert_eq!(
+        limits.check_string_annotations,
+        defaults.check_string_annotations
+    );
+    assert_eq!(limits.max_token_bytes, defaults.max_token_bytes);
+    assert_eq!(limits.max_call_arguments, defaults.max_call_arguments);
+    assert_eq!(limits.max_parameters, defaults.max_parameters);
+    assert_eq!(limits.max_display_items, defaults.max_display_items);
+    assert_eq!(limits.max_slice_items, defaults.max_slice_items);
+    assert_eq!(
+        limits.max_interpolation_fields,
+        defaults.max_interpolation_fields
+    );
+
+    let source = "# corpus padding with many source bytes\nx = 1\n".repeat(30_000);
+    assert!(check(&source, &defaults).is_err());
+    assert!(check(&source, &limits).is_ok());
+    let deep = format!("x = a{}", ".x".repeat(101));
+    assert_eq!(check(&deep, &limits).unwrap_err().reason, Reason::AstDepth);
+    let oversized = " ".repeat(limits.max_source_bytes + 1);
+    assert_eq!(
+        check(&oversized, &limits).unwrap_err().reason,
+        Reason::SourceSize
+    );
+}

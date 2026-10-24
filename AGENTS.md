@@ -23,7 +23,7 @@ Tokspam is integrated at Monty's pre-parser source guard, while the library rema
 - `tests/` covers configurable limits and allocation behavior.
 - Fuzzing, corpus generation, parser comparisons, and benchmarks live in the separate `tokspam-fuzzer` project.
 
-The library has no runtime dependencies.
+The sole runtime dependency is `memchr`, used for optimized byte searches.
 Scratch allocation count and sizes depend only on `Limits`; input must not trigger additional heap allocations during
 scanning.
 Oversized source is rejected before scratch allocation.
