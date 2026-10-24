@@ -1,8 +1,0 @@
-{
-  "cases": [
-    {"name": "ordinary", "source": "cases/ordinary.py"},
-    {"name": "f-string", "source": "cases/f_string.py"},
-    {"name": "quoted-annotation", "source": "cases/quoted_annotation.py"},
-    {"name": "indented", "source": "cases/indented.py"}
-  ]
-}

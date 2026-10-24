@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "python-spam"
+name = "tokspam"
 version = "0.1.0"

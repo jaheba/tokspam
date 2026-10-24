@@ -2,15 +2,17 @@
 //! Acceptance is not yet a verified bound on Python parser recursion.
 //!
 //! ```
-//! use spam::{Limits, check};
+//! use tokspam::{Limits, check};
 //! let limits = Limits { max_nesting_depth: 80, ..Limits::default() };
 //! assert!(check("x = [1, 2, 3]", &limits).is_ok());
 //! ```
 mod lexer;
 mod rules;
+mod stack;
 
 use lexer::{Kind, Lexer, LexerScratch, LexerState};
-use rules::Scanner;
+use rules::{Scanner, ScannerState};
+use stack::{Mark, SCAN_FRAMES, STRUCTURAL_CAPACITY, Stack};
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,9 +208,8 @@ fn validate_limit(value: usize, maximum: usize, limit: LimitKind) -> Result<(), 
 
 /// Rejects source that exceeds the configured structural budgets.
 /// Successful screening does not validate Python syntax.
-/// Scratch allocations depend only on `limits` and finish before token scanning.
-/// Oversized source is rejected before allocating scratch memory.
-/// Use [`Checker`] to amortize scratch allocation across multiple inputs.
+/// Performs no heap allocations, including construction of its inline scratch.
+/// Use [`Checker`] to reuse that scratch across multiple inputs.
 pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
     if limits.validate().is_err() {
         return Err(Rejection {
@@ -226,15 +227,16 @@ pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
     Checker::new_validated(limits.clone()).check(source)
 }
 
-/// Reusable screening state. Construction allocates scratch storage from the
-/// configured limits; subsequent checks perform no heap allocations.
+/// Reusable screening state backed by fixed-capacity inline arrays.
+/// Construction and checks perform no heap allocations. Storage is sized for
+/// the hard implementation ceilings, even when configured limits are smaller.
 ///
 /// Use one checker per worker when screening many inputs before parsing them.
 /// Source strings are borrowed only for the duration of each check.
 pub struct Checker {
     limits: Limits,
-    scratch: Vec<ScanScratch>,
-    work: Vec<ScanWork>,
+    scratch: ScanScratch,
+    work: Stack<ScanWork, SCAN_FRAMES>,
 }
 
 impl Checker {
@@ -244,21 +246,10 @@ impl Checker {
     }
 
     fn new_validated(limits: Limits) -> Self {
-        let annotation_depth = if limits.check_string_annotations {
-            limits.max_annotation_depth
-        } else {
-            0
-        };
-        let scratch = (0..=annotation_depth)
-            .map(|_| ScanScratch::new(&limits))
-            .collect();
-
-        let work = Vec::with_capacity(usize::from(annotation_depth) + 1);
-
         Self {
+            scratch: ScanScratch::new(&limits),
+            work: Stack::default(),
             limits,
-            scratch,
-            work,
         }
     }
 
@@ -287,6 +278,7 @@ impl Checker {
     }
 }
 
+#[derive(Default)]
 struct ScanWork {
     source: Range<usize>,
     budget: u32,
@@ -294,12 +286,13 @@ struct ScanWork {
     annotation_source: bool,
     depth: u8,
     lexer: Option<LexerState>,
+    saved: Option<SavedScratch>,
     region_start: bool,
     outer_annotation: Option<Range<usize>>,
 }
 
-// Allocate every annotation frame before inspecting tokens. Reusing these frames
-// keeps both allocation count and capacity independent of the source structure.
+// One set of inline buffers serves every scan. Work frames save only scalar
+// state and segment marks; suspended entries remain below the active base.
 struct ScanScratch {
     lexer: LexerScratch,
     scanner: Scanner,
@@ -307,18 +300,48 @@ struct ScanScratch {
     widths: WidthTracker,
 }
 
-impl ScanScratch {
-    fn new(limits: &Limits) -> Self {
-        let budget = u32::from(limits.max_nesting_depth);
+struct SavedScratch {
+    lexer: [Mark; 2],
+    scanner: (ScannerState, [Mark; 3]),
+    annotations: (AnnotationState, Mark),
+    widths: (WidthState, Mark),
+}
 
+impl ScanScratch {
+    fn suspend(&mut self) -> SavedScratch {
+        SavedScratch {
+            lexer: self.lexer.suspend(),
+            scanner: self.scanner.suspend(),
+            annotations: (self.annotations.state, self.annotations.brackets.suspend()),
+            widths: (self.widths.state, self.widths.frames.suspend()),
+        }
+    }
+
+    fn restore(&mut self, saved: SavedScratch) {
+        self.lexer.restore(saved.lexer);
+        self.scanner.restore(saved.scanner);
+        self.annotations.state = saved.annotations.0;
+        self.annotations.brackets.restore(saved.annotations.1);
+        self.widths.state = saved.widths.0;
+        self.widths.frames.restore(saved.widths.1);
+    }
+
+    fn clear_segments(&mut self) {
+        self.lexer.clear_segments();
+        self.scanner.clear_segments();
+        self.annotations.brackets.reset();
+        self.widths.frames.reset();
+    }
+
+    fn new(limits: &Limits) -> Self {
         Self {
-            lexer: LexerScratch::new(budget as usize, usize::from(limits.max_indentation_depth)),
-            scanner: Scanner::new(budget, limits.max_ast_depth.map(u32::from)),
-            annotations: AnnotationTracker {
-                brackets: Vec::with_capacity(budget as usize),
-                ..AnnotationTracker::default()
-            },
-            widths: WidthTracker::new(budget as usize),
+            lexer: LexerScratch::default(),
+            scanner: Scanner::new(
+                u32::from(limits.max_nesting_depth),
+                limits.max_ast_depth.map(u32::from),
+            ),
+            annotations: AnnotationTracker::default(),
+            widths: WidthTracker::new(),
         }
     }
 }
@@ -326,9 +349,11 @@ impl ScanScratch {
 fn scan<const FAST: bool, const REGIONS: bool>(
     source: &str,
     limits: &Limits,
-    scratch: &mut [ScanScratch],
-    work: &mut Vec<ScanWork>,
+    scratch: &mut ScanScratch,
+    work: &mut Stack<ScanWork, SCAN_FRAMES>,
 ) -> Result<(), Rejection> {
+    // Reset all segment bases after success or rejection, including child errors.
+    scratch.clear_segments();
     work.clear();
     work.push(ScanWork {
         source: 0..source.len(),
@@ -337,10 +362,13 @@ fn scan<const FAST: bool, const REGIONS: bool>(
         annotation_source: false,
         depth: 0,
         lexer: None,
+        saved: None,
         region_start: true,
         outer_annotation: None,
     });
     let mut tokens_used = 0usize;
+    // Charge the outer source once, then charge annotation contents again when
+    // reinterpreted. Nested strings must not multiply the configured work budget.
     let mut bytes_scanned = source.len();
     if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
         return Err(Rejection {
@@ -360,8 +388,10 @@ fn scan<const FAST: bool, const REGIONS: bool>(
             scanner,
             annotations,
             widths,
-        } = &mut scratch[index];
+        } = &mut *scratch;
 
+        // Parent entries remain below the active segment in the shared buffers;
+        // each frame retains its scalar tracking state.
         let mut lexer = if let Some(state) = current.lexer {
             Lexer::resume(
                 frame_source,
@@ -481,6 +511,7 @@ fn scan<const FAST: bool, const REGIONS: bool>(
             let mut child = None;
             if limits.check_string_annotations
                 && (current.annotation_source || annotations.active())
+                && annotations.type_position()
             {
                 if let Some(contents) = token.contents.clone() {
                     let remaining = current.budget.saturating_sub(scanner.total);
@@ -488,6 +519,8 @@ fn scan<const FAST: bool, const REGIONS: bool>(
                         .ast_budget
                         .map(|budget| budget.saturating_sub(scanner.ast_total));
                     let minimum = remaining.min(ast_remaining.unwrap_or(remaining));
+                    // Without decoding or expansion, byte length bounds the
+                    // possible structural depth. Short contents need no rescan.
                     if contents.len() > minimum as usize {
                         if current.depth >= limits.max_annotation_depth {
                             return reject(Reason::QuotedAnnotation, absolute(&token.range));
@@ -509,6 +542,7 @@ fn scan<const FAST: bool, const REGIONS: bool>(
                             annotation_source: true,
                             depth: current.depth + 1,
                             lexer: None,
+                            saved: None,
                             region_start: true,
                             outer_annotation: Some(
                                 current
@@ -525,15 +559,21 @@ fn scan<const FAST: bool, const REGIONS: bool>(
             }
             annotations.observe(frame_source, token.kind, &token.range);
             if let Some(child) = child {
+                // Observe the string in its parent before suspending: the child
+                // borrows the remaining depth but has independent lexical state.
                 current.lexer = Some(lexer.state());
                 break Some(child);
             }
         };
 
         if let Some(child) = next_child {
+            work[index].saved = Some(scratch.suspend());
             work.push(child);
         } else {
             work.pop();
+            if let Some(parent) = work.last_mut() {
+                scratch.restore(parent.saved.take().expect("parent suspended before child"));
+            }
         }
     }
 }
@@ -570,41 +610,51 @@ enum WidthKind {
     Ignore,
 }
 
+const _: () = assert!(MAX_TOKENS <= u32::MAX as usize);
+
 struct WidthFrame {
     kind: WidthKind,
-    items: usize,
+    // Counts cannot exceed the shared hard token budget (including malformed
+    // input); u32 retains the full range without pointer-sized counters.
+    items: u32,
+    // Commas finalize items; the closing delimiter charges a nonempty final
+    // item. This avoids counting empty constructs or trailing commas twice.
     seen_item: bool,
     has_comma: bool,
     marker_only: bool,
     comprehension: bool,
-    adjacent_fields: usize,
+    adjacent_fields: u32,
 }
 
+// Classify delimiters lexically so nested contents count as one parent item.
+// This estimates construct widths without validating Python's full grammar.
 struct WidthTracker {
-    frames: Vec<WidthFrame>,
+    frames: Stack<WidthFrame, STRUCTURAL_CAPACITY>,
+    state: WidthState,
+}
+
+#[derive(Clone, Copy, Default)]
+struct WidthState {
     previous_ends_operand: bool,
     pending_def: bool,
     pending_non_call: bool,
-    root_adjacent_fields: usize,
+    root_adjacent_fields: u32,
 }
 
 impl WidthTracker {
-    fn new(capacity: usize) -> Self {
+    fn new() -> Self {
         Self {
-            frames: Vec::with_capacity(capacity + 1),
-            previous_ends_operand: false,
-            pending_def: false,
-            pending_non_call: false,
-            root_adjacent_fields: 0,
+            frames: Stack::default(),
+            state: WidthState::default(),
         }
     }
 
     fn reset(&mut self) {
         self.frames.clear();
-        self.previous_ends_operand = false;
-        self.pending_def = false;
-        self.pending_non_call = false;
-        self.root_adjacent_fields = 0;
+        self.state.previous_ends_operand = false;
+        self.state.pending_def = false;
+        self.state.pending_non_call = false;
+        self.state.root_adjacent_fields = 0;
     }
 
     fn observe(
@@ -615,26 +665,26 @@ impl WidthTracker {
         limits: &Limits,
     ) -> Option<Reason> {
         if kind == Kind::Name && &source[range.clone()] == "def" {
-            self.pending_def = true;
+            self.state.pending_def = true;
         }
         if kind == Kind::Name && matches!(&source[range.clone()], "class" | "import") {
-            self.pending_non_call = true;
+            self.state.pending_non_call = true;
         }
 
         let opened = match kind {
             Kind::FStringStart => Some(WidthKind::FString),
             Kind::Lambda => Some(WidthKind::Parameters),
-            Kind::Lpar if self.pending_def => {
-                self.pending_def = false;
+            Kind::Lpar if self.state.pending_def => {
+                self.state.pending_def = false;
                 Some(WidthKind::Parameters)
             }
-            Kind::Lpar if self.pending_non_call => {
-                self.pending_non_call = false;
+            Kind::Lpar if self.state.pending_non_call => {
+                self.state.pending_non_call = false;
                 Some(WidthKind::Ignore)
             }
-            Kind::Lpar if self.previous_ends_operand => Some(WidthKind::Call),
+            Kind::Lpar if self.state.previous_ends_operand => Some(WidthKind::Call),
             Kind::Lpar => Some(WidthKind::Parenthesized),
-            Kind::Lsqb if self.previous_ends_operand => Some(WidthKind::Slice),
+            Kind::Lsqb if self.state.previous_ends_operand => Some(WidthKind::Slice),
             Kind::Lsqb => Some(WidthKind::Display),
             Kind::Lbrace
                 if matches!(
@@ -646,7 +696,7 @@ impl WidthTracker {
                     parent.items += 1;
                     if limits
                         .max_interpolation_fields
-                        .is_some_and(|limit| parent.items > limit)
+                        .is_some_and(|limit| parent.items as usize > limit)
                     {
                         return Some(Reason::InterpolationFields);
                     }
@@ -658,15 +708,26 @@ impl WidthTracker {
         };
 
         if let Some(opened) = opened {
+            // Unfinished lambda parameter lists can accumulate before their
+            // colons charge parser depth. Stop at fixed scratch capacity rather
+            // than asserting a structural violation we have not established.
+            if self.frames.is_full() {
+                return Some(Reason::Inconclusive);
+            }
+
+            // Python folds adjacent string literals into one expression. Carry
+            // interpolation counts across that boundary, but not other operands.
             let adjacent_fields = if matches!(opened, WidthKind::FString) {
                 self.frames
                     .last()
-                    .map_or(self.root_adjacent_fields, |frame| frame.adjacent_fields)
+                    .map_or(self.state.root_adjacent_fields, |frame| {
+                        frame.adjacent_fields
+                    })
             } else {
                 if let Some(parent) = self.frames.last_mut() {
                     parent.adjacent_fields = 0;
                 } else {
-                    self.root_adjacent_fields = 0;
+                    self.state.root_adjacent_fields = 0;
                 }
                 0
             };
@@ -708,7 +769,7 @@ impl WidthTracker {
                     frame.kind,
                     WidthKind::FString | WidthKind::Interpolation { .. }
                 ) {
-                    frame.items += usize::from(frame.seen_item && !frame.marker_only);
+                    frame.items += u32::from(frame.seen_item && !frame.marker_only);
                 }
                 if let Some(reason) = frame.exceeded(limits) {
                     return Some(reason);
@@ -719,7 +780,7 @@ impl WidthTracker {
                 if let Some(parent) = self.frames.last_mut() {
                     parent.adjacent_fields = adjacent_fields;
                 } else {
-                    self.root_adjacent_fields = adjacent_fields;
+                    self.state.root_adjacent_fields = adjacent_fields;
                 }
             }
             if let Some(parent) = self.frames.last_mut() {
@@ -730,7 +791,7 @@ impl WidthTracker {
                 if let Some(frame) = self.frames.last_mut() {
                     frame.adjacent_fields = 0;
                 } else {
-                    self.root_adjacent_fields = 0;
+                    self.state.root_adjacent_fields = 0;
                 }
             }
             if kind == Kind::For
@@ -756,6 +817,8 @@ impl WidthTracker {
                         && matches!(frame.kind, WidthKind::Parameters)
                         && matches!(kind, Kind::Slash | Kind::Star)
                     {
+                        // Bare `/` and `*` separate parameter groups; `*args`
+                        // becomes a real item when another token follows.
                         frame.marker_only = true;
                     } else if frame.seen_item {
                         frame.marker_only = false;
@@ -766,10 +829,10 @@ impl WidthTracker {
         }
 
         if matches!(kind, Kind::Newline | Kind::Semi | Kind::Colon) {
-            self.pending_def = false;
-            self.pending_non_call = false;
+            self.state.pending_def = false;
+            self.state.pending_non_call = false;
         }
-        self.previous_ends_operand = matches!(
+        self.state.previous_ends_operand = matches!(
             kind,
             Kind::Name
                 | Kind::Case
@@ -804,52 +867,84 @@ impl WidthFrame {
             | WidthKind::Ignore => return None,
         };
         limit
-            .is_some_and(|limit| self.items > limit)
+            .is_some_and(|limit| self.items as usize > limit)
             .then_some(reason)
     }
 }
 
+// Track likely annotation positions rather than parse type expressions.
+// Colons in slices, dictionaries, lambdas, and block headers need exclusions.
 #[derive(Default)]
 struct AnnotationTracker {
-    brackets: Vec<Kind>,
+    brackets: Stack<AnnotationBracket, STRUCTURAL_CAPACITY>,
+    state: AnnotationState,
+}
+
+#[derive(Default)]
+struct AnnotationBracket {
+    kind: Kind,
+    // Value contexts propagate through nested calls, containers, and subscripts.
+    value: bool,
+    annotated_type: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+enum AnnotationName {
+    #[default]
+    Other,
+    Literal,
+    Annotated,
+}
+
+#[derive(Clone, Copy, Default)]
+struct AnnotationState {
+    // Separators end an annotation only at its starting bracket depth; commas
+    // inside types such as tuple[int, str] remain part of the annotation.
     start_depth: Option<usize>,
     line_started: bool,
     block_header: bool,
     pending_lambdas: u32,
     previous: Option<(Kind, usize)>,
+    previous_name: AnnotationName,
 }
 
 impl AnnotationTracker {
     #[cfg(feature = "experimental-regions")]
     fn region_ready(&self) -> bool {
         debug_assert!(self.brackets.is_empty() && !self.active());
-        self.pending_lambdas == 0
+        self.state.pending_lambdas == 0
     }
 
     fn reset(&mut self) {
         self.brackets.clear();
-        self.start_depth = None;
-        self.line_started = false;
-        self.block_header = false;
-        self.pending_lambdas = 0;
-        self.previous = None;
+        self.state.start_depth = None;
+        self.state.line_started = false;
+        self.state.block_header = false;
+        self.state.pending_lambdas = 0;
+        self.state.previous = None;
+        self.state.previous_name = AnnotationName::Other;
+    }
+
+    fn type_position(&self) -> bool {
+        !self.brackets.last().is_some_and(|bracket| bracket.value)
     }
 
     fn active(&self) -> bool {
-        self.start_depth.is_some()
+        self.state.start_depth.is_some()
     }
 
     fn observe(&mut self, source: &str, kind: Kind, range: &Range<usize>) {
         if matches!(kind, Kind::Newline | Kind::Semi) {
-            self.start_depth = None;
-            self.line_started = false;
-            self.block_header = false;
-            self.previous = None;
+            self.state.start_depth = None;
+            self.state.line_started = false;
+            self.state.block_header = false;
+            self.state.previous = None;
+            self.state.previous_name = AnnotationName::Other;
             return;
         }
-        if !self.line_started && !matches!(kind, Kind::Indent | Kind::Dedent) {
-            self.line_started = true;
-            self.block_header = matches!(
+        if !self.state.line_started && !matches!(kind, Kind::Indent | Kind::Dedent) {
+            self.state.line_started = true;
+            self.state.block_header = matches!(
                 &source[range.clone()],
                 "if" | "elif"
                     | "else"
@@ -867,40 +962,89 @@ impl AnnotationTracker {
             );
         }
         if matches!(kind, Kind::Equal | Kind::Comma)
-            && self.start_depth == Some(self.brackets.len())
+            && self.state.start_depth == Some(self.brackets.len())
         {
-            self.start_depth = None;
+            self.state.start_depth = None;
         }
         if matches!(kind, Kind::Rpar | Kind::Rsqb | Kind::Rbrace)
             && self
+                .state
                 .start_depth
                 .is_some_and(|depth| self.brackets.len() <= depth)
         {
-            self.start_depth = None;
+            self.state.start_depth = None;
         }
         if kind == Kind::Lambda {
-            self.pending_lambdas += 1;
+            self.state.pending_lambdas += 1;
         }
         if kind == Kind::Colon {
-            if self.pending_lambdas > 0 {
-                self.pending_lambdas -= 1;
-            } else if !matches!(self.brackets.last(), Some(Kind::Lbrace | Kind::Lsqb))
-                && (!self.brackets.is_empty() || !self.block_header)
+            if self.state.pending_lambdas > 0 {
+                self.state.pending_lambdas -= 1;
+            } else if self.type_position()
+                && !matches!(
+                    self.brackets.last().map(|bracket| bracket.kind),
+                    Some(Kind::Lbrace | Kind::Lsqb)
+                )
+                && (!self.brackets.is_empty() || !self.state.block_header)
             {
-                self.start_depth = Some(self.brackets.len());
+                self.state.start_depth = Some(self.brackets.len());
             }
         }
-        if kind == Kind::Greater && self.previous == Some((Kind::Minus, range.start)) {
-            self.start_depth = Some(self.brackets.len());
+        // The lexer emits `->` as two tokens. Require adjacent byte ranges so
+        // separate minus/greater tokens cannot masquerade as a return annotation.
+        if kind == Kind::Greater && self.state.previous == Some((Kind::Minus, range.start)) {
+            self.state.start_depth = Some(self.brackets.len());
+        }
+        if kind == Kind::Comma
+            && let Some(bracket) = self.brackets.last_mut()
+            && bracket.annotated_type
+        {
+            // Only Annotated's first argument is a type. Its remaining operands
+            // and all Literal operands are values, even inside quoted types.
+            bracket.value = true;
+            bracket.annotated_type = false;
         }
         match kind {
-            Kind::Lpar | Kind::Lsqb | Kind::Lbrace => self.brackets.push(kind),
+            Kind::Lpar | Kind::Lsqb | Kind::Lbrace => {
+                let value = !self.type_position()
+                    || (kind == Kind::Lsqb
+                        && matches!(self.state.previous_name, AnnotationName::Literal));
+                self.brackets.push(AnnotationBracket {
+                    kind,
+                    value,
+                    annotated_type: kind == Kind::Lsqb
+                        && matches!(self.state.previous_name, AnnotationName::Annotated),
+                });
+            }
             Kind::Rpar | Kind::Rsqb | Kind::Rbrace => {
                 self.brackets.pop();
             }
             _ => {}
         }
-        self.previous = Some((kind, range.end));
+        self.state.previous = Some((kind, range.end));
+        self.state.previous_name = if kind == Kind::Name {
+            match &source[range.clone()] {
+                "Literal" => AnnotationName::Literal,
+                "Annotated" => AnnotationName::Annotated,
+                _ => AnnotationName::Other,
+            }
+        } else {
+            AnnotationName::Other
+        };
+    }
+}
+
+impl Default for WidthFrame {
+    fn default() -> Self {
+        Self {
+            kind: WidthKind::Ignore,
+            items: 0,
+            seen_item: false,
+            has_comma: false,
+            marker_only: false,
+            comprehension: false,
+            adjacent_fields: 0,
+        }
     }
 }
 
@@ -979,7 +1123,7 @@ mod tests {
             "f'{",
             "([)]",
         ] {
-            let mut scratch = LexerScratch::new(30, 30);
+            let mut scratch = LexerScratch::default();
             for token in Lexer::new(source, 30, 30, &mut scratch) {
                 assert!(source.is_char_boundary(token.range.start));
                 assert!(source.is_char_boundary(token.range.end));
@@ -1002,7 +1146,7 @@ mod tests {
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 source.push(alphabet[(state >> 32) as usize % alphabet.len()]);
             }
-            let mut scratch = LexerScratch::new(30, 30);
+            let mut scratch = LexerScratch::default();
             let tokens: Vec<_> = Lexer::new(&source, 30, 30, &mut scratch)
                 .take(source.len() * 2 + 32)
                 .collect();

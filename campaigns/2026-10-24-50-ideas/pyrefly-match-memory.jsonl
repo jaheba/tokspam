@@ -1,7 +1,0 @@
-{"cases": 100, "bytes": 1424, "wall_ms": 140.69, "physical_mib": 54.9, "returncode": 0}
-{"cases": 250, "bytes": 3524, "wall_ms": 73.52, "physical_mib": 58.7, "returncode": 0}
-{"cases": 500, "bytes": 7024, "wall_ms": 87.5, "physical_mib": 69.4, "returncode": 0}
-{"cases": 750, "bytes": 10524, "wall_ms": 104.6, "physical_mib": 87.7, "returncode": 0}
-{"cases": 1000, "bytes": 14024, "wall_ms": 121.72, "physical_mib": 111.1, "returncode": 0}
-{"cases": 1500, "bytes": 21024, "wall_ms": 187.85, "physical_mib": 173.6, "returncode": 0}
-{"cases": 2000, "bytes": 28024, "wall_ms": 342.41, "physical_mib": 256.9, "returncode": 0}

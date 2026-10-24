@@ -1,9 +1,12 @@
 //! Streaming byte lexer. It preserves source ranges and never decodes literals.
+use crate::stack::{Mark, STRUCTURAL_CAPACITY, Stack};
 use std::ops::Range;
 
 #[cfg(feature = "experimental-regions")]
 #[path = "lexer/region.rs"]
 mod region;
+
+const _: () = assert!(crate::MAX_SOURCE_BYTES <= u32::MAX as usize / 8);
 
 const NAME_BYTE: u8 = 1;
 const NUMBER_BYTE: u8 = 2;
@@ -29,8 +32,9 @@ const BYTE_CLASSES: [u8; 256] = {
     classes
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Kind {
+    #[default]
     Name,
     Int,
     String,
@@ -98,18 +102,24 @@ pub struct Token {
     pub contents: Option<Range<usize>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 enum Context {
+    #[default]
     Root,
     Bracket(u8),
-    Text { quote: u8, width: usize },
+    Text {
+        quote: u8,
+        // Python quote delimiters are one or three bytes wide.
+        width: u8,
+    },
     Field,
     Format,
 }
 
+#[derive(Default)]
 pub(super) struct LexerScratch {
-    contexts: Vec<Context>,
-    indents: Vec<usize>,
+    contexts: Stack<Context, STRUCTURAL_CAPACITY>,
+    indents: Stack<u32, STRUCTURAL_CAPACITY>,
 }
 
 #[derive(Clone, Copy)]
@@ -121,19 +131,26 @@ pub(super) struct LexerState {
 }
 
 impl LexerScratch {
-    pub(super) fn new(limit: usize, indentation_limit: usize) -> Self {
-        Self {
-            contexts: Vec::with_capacity(limit + 1),
-            indents: Vec::with_capacity(indentation_limit + 1),
-        }
+    pub(super) fn suspend(&mut self) -> [Mark; 2] {
+        [self.contexts.suspend(), self.indents.suspend()]
+    }
+
+    pub(super) fn restore(&mut self, saved: [Mark; 2]) {
+        self.contexts.restore(saved[0]);
+        self.indents.restore(saved[1]);
+    }
+
+    pub(super) fn clear_segments(&mut self) {
+        self.contexts.reset();
+        self.indents.reset();
     }
 }
 
 pub struct Lexer<'a, 's> {
     source: &'a str,
     position: usize,
-    contexts: &'s mut Vec<Context>,
-    indents: &'s mut Vec<usize>,
+    contexts: &'s mut Stack<Context, STRUCTURAL_CAPACITY>,
+    indents: &'s mut Stack<u32, STRUCTURAL_CAPACITY>,
     line_start: bool,
     pending_indent: Option<usize>,
     limit: usize,
@@ -301,6 +318,12 @@ impl<'a, 's> Lexer<'a, 's> {
         }
     }
 
+    #[cold]
+    fn invalid_code_byte(&mut self, start: usize) -> Token {
+        self.stopped = true;
+        self.token(Kind::Limit, start)
+    }
+
     fn push(&mut self, context: Context) -> bool {
         if self.contexts.len() > self.limit {
             self.stopped = true;
@@ -325,7 +348,10 @@ impl<'a, 's> Lexer<'a, 's> {
             .iter()
             .any(|b| matches!(b, b'f' | b'F' | b't' | b'T'))
         {
-            let kind = if self.push(Context::Text { quote, width }) {
+            let kind = if self.push(Context::Text {
+                quote,
+                width: width as u8,
+            }) {
                 Kind::FStringStart
             } else {
                 Kind::NestingLimit
@@ -404,7 +430,7 @@ impl<'a, 's> Lexer<'a, 's> {
 
         if let Context::Text { quote, width } = context {
             if byte == quote && (width == 1 || bytes.get(start..start + 3) == Some(&[quote; 3])) {
-                self.position += width;
+                self.position += usize::from(width);
                 self.contexts.pop();
                 return Some(self.token(Kind::FStringEnd, start));
             }
@@ -467,7 +493,7 @@ impl<'a, 's> Lexer<'a, 's> {
             column
         };
 
-        let previous = *self.indents.last().unwrap();
+        let previous = *self.indents.last().unwrap() as usize;
         if column < previous {
             self.indents.pop();
             self.pending_indent = Some(column);
@@ -479,7 +505,10 @@ impl<'a, 's> Lexer<'a, 's> {
                 self.stopped = true;
                 return Some(self.token(Kind::IndentationLimit, start));
             }
-            self.indents.push(column);
+            // A tab adds at most eight columns per source byte; the hard
+            // source-size ceiling therefore keeps indentation within u32.
+            self.indents
+                .push(u32::try_from(column).expect("indentation fits the hard source ceiling"));
             return Some(self.token(Kind::Indent, start));
         }
         None
@@ -676,11 +705,15 @@ impl Iterator for Lexer<'_, '_> {
                             b'<' => Kind::Less,
                             b'>' => Kind::Greater,
                             b'=' => Kind::Equal,
+                            // Single `!` is used in f-string conversions. The
+                            // parser still validates conversion syntax/placement.
                             _ => Kind::Other,
                         }
                     }
                 }
-                _ => Kind::Other,
+                // Supported punctuation and non-ASCII name bytes are handled
+                // above. Literal/comment contents bypass this code dispatch.
+                _ => return Some(self.invalid_code_byte(start)),
             };
             return Some(self.token(kind, start));
         }
@@ -692,7 +725,7 @@ mod tests {
     use super::*;
 
     fn tokens(source: &str) -> Vec<Token> {
-        let mut scratch = LexerScratch::new(100, 100);
+        let mut scratch = LexerScratch::default();
         let tokens: Vec<_> = Lexer::new(source, 100, 100, &mut scratch).collect();
         for token in &tokens {
             assert!(source.is_char_boundary(token.range.start));

@@ -1,0 +1,78 @@
+# Configuration and scanning
+
+`Limits` also controls token count, cumulative scan work, indentation depth, scanning quoted annotations, and the
+maximum number of nested annotations. Scan work is the sum of bytes admitted to scans and tokens emitted, including
+quoted annotations interpreted as Python. Exhausting that budget returns `Reason::Inconclusive` rather than claiming a
+specific structural violation.
+`check` returns a reason and a byte range for rejected input.
+For repeated use, create a `Checker` once per worker.
+Construction, the one-shot `check` function, and every reusable check perform zero heap allocations, including checks
+after a rejection. Scratch arrays are stored inline and sized for the hard implementation ceilings. Lower runtime
+limits do not reduce the checker's size. Reuse avoids initializing these arrays for every input.
+On the measured 64-bit target, `size_of::<Checker>()` is 82,072 bytes (about 80 KiB), excluding the borrowed source.
+Local construction also needs stack space for compiler-generated temporaries. Construction and one-shot calls were
+checked on 2 MiB thread stacks in debug builds and 1 MiB stacks in release builds; these are tested configurations,
+not portable minimum stack requirements.
+
+```rust
+use tokspam::{Checker, Limits};
+
+let mut checker = Checker::new(Limits::default()).expect("valid limits");
+checker.check("x = [1, 2, 3]")?;
+checker.check("y = x[0]")?;
+# Ok::<(), tokspam::Rejection>(())
+```
+
+`Checker::new` validates configuration and returns `ConfigError` for a value above an implementation
+ceiling.
+`Limits::validate` performs the same check without constructing a checker.
+The one-shot `check` function reports `Reason::Configuration` at `0..0` for invalid settings.
+
+| Limit | Hard maximum |
+| --- | ---: |
+| Source bytes | 16 MiB |
+| Tokens | 1,000,000 |
+| Token bytes | 16 MiB |
+| Delimiter/parser depth | 1,024 |
+| Indentation depth | 1,024 |
+| Nested quoted annotations | 32 |
+| Estimated AST depth | 4,096 |
+| Each experimental construct width | 1,000,000 |
+
+The optional AST check counts long binary, attribute, call, and subscript chains that a parser may construct iteratively
+but later destroy recursively.
+Its depth estimate is conservative.
+
+A shared structural pass maintains separate parser and AST depth estimates.
+A conservative fast path scans a prefix of short, unindented simple lines without constructing tokens.
+It counts tokens exactly and uses line byte length as a depth upper bound; complex syntax or insufficient budgets falls
+back to detailed scanning.
+
+The lexer handles comments, strings, f-strings, template strings, indentation, and explicit line continuations.
+It retains bounded stacks and scans without storing a token list.
+Scratch storage consists of fixed-capacity inline arrays; neither construction nor input scanning allocates on the heap,
+including while scanning nested quoted annotations.
+Quoted annotations are scanned with an explicit preallocated work stack; source structure never adds native Rust stack
+frames. Suspended scans share segmented scratch buffers, retaining only scalar state per annotation level. Buffer
+capacities cover hard structural limits plus annotation depth rather than reserving full buffers for every level.
+The one-shot function rejects oversized source before constructing its checker.
+String contents are screened only at likely annotation positions, including variable, parameter, and return annotations.
+Only the first operand of `Annotated[...]` is treated as a type; subsequent metadata operands and all
+`Literal[...]` operands are values, so their strings are not screened as forward references. These exclusions also
+apply inside quoted type expressions and recognize qualified names ending in `Annotated` or `Literal`.
+This is a lexical heuristic, not a Python grammar check or name resolution; aliases are not resolved and shadowing
+of these typing names is not detected. Unknown type constructors retain conservative string screening.
+Escaped and concatenated annotations are not decoded.
+
+Unrecognized ASCII code bytes, such as `$`, backticks, and control characters,
+produce a `LexicalStructure` rejection. String text and comments bypass this
+check. It is not token or syntax validation: Unicode identifiers, numeric spellings,
+and f-string conversion grammar still require the downstream parser.
+
+Tokspam exposes independent optional budgets for call arguments, function and lambda parameters, display items, subscript
+items, and f-string or template-string interpolation fields.
+All five default to `None`, so upgrading does not enable them automatically.
+The former `experimental-width-limits` Cargo feature is a compatibility no-op.
+The first calibrated profile uses 4,096 for calls, parameters, slices, and interpolation fields and 8,192 for displays.
+These values are starting points rather than stable defaults; see the [width-limit
+experiment](https://github.com/jaheba/tokspam-fuzzer/blob/main/campaigns/2026-10-24-width-limits/SUMMARY.md).

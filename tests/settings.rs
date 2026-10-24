@@ -1,4 +1,4 @@
-use spam::{
+use tokspam::{
     Checker, LimitKind, Limits, MAX_ANNOTATION_DEPTH, MAX_AST_DEPTH, MAX_INDENTATION_DEPTH,
     MAX_NESTING_DEPTH, MAX_SOURCE_BYTES, MAX_TOKEN_BYTES, MAX_TOKENS, MAX_WORK_UNITS, Reason,
     check,
@@ -332,6 +332,88 @@ fn forward_annotations_are_still_screened() {
 }
 
 #[test]
+fn annotation_metadata_and_literal_values_are_not_forward_references() {
+    // Long prose can contain unmatched Python syntax without being type source.
+    let prose = format!("{}don't parse this ([)]", "word ".repeat(40));
+    let quoted_prose = prose.replace("don't", "do not");
+    for source in [
+        format!("x: Annotated[int, Doc(\"{prose}\")]"),
+        format!("x: typing.Annotated[int, Field(description=\"{prose}\")]"),
+        format!("def f(x: Annotated[int, Doc(\"{prose}\")]): pass"),
+        format!("def f() -> Annotated[int, Doc(\"{prose}\")]: pass"),
+        format!("x: Annotated[tuple[int, str], Doc(\"{prose}\"), \"{prose}\"]"),
+        format!("x: Annotated[int, {{'doc': [\"{prose}\"]}}]"),
+        format!("x: Literal[\"{prose}\", 42]"),
+        format!("x: typing_extensions.Literal[\"{prose}\"]"),
+        format!("x: list[Literal[\"{prose}\"]]"),
+        format!("x: Annotated[int, Annotated[\"{prose}\", 'metadata']]"),
+        format!("x: 'Annotated[int, Doc(\"{quoted_prose}\")]'"),
+        format!("x: 'Literal[\"{quoted_prose}\"]'"),
+    ] {
+        let mut checker = Checker::new(Limits::default()).unwrap();
+        assert!(checker.check(&source).is_ok(), "{source}");
+        assert!(check(&source, &Limits::default()).is_ok(), "{source}");
+    }
+}
+
+#[test]
+fn metadata_exclusions_preserve_forward_reference_screening() {
+    let deep = format!("{}int{}", "list[".repeat(100), "]".repeat(100));
+    for source in [
+        format!("x: Annotated['{deep}', Doc('metadata')]"),
+        format!("x: typing.Annotated[tuple[int, '{deep}'], 'metadata']"),
+        format!("x: tuple[Literal['data'], '{deep}']"),
+        format!("x: Annotated[int, 'metadata'] | '{deep}'"),
+        format!("def f(x: Annotated[int, 'metadata'], y: '{deep}'): pass"),
+        format!("x: NotLiteral['{deep}']"),
+        format!("x: Annotated[Annotated['{deep}', 'inner'], 'outer']"),
+        format!("x: Callable[[Literal['data']], '{deep}']"),
+        format!("x: \"Annotated['{deep}', 'metadata']\""),
+        format!("x: \"tuple[Literal['data'], '{deep}']\""),
+    ] {
+        let mut checker = Checker::new(Limits::default()).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                checker.check(&source).unwrap_err().reason,
+                Reason::QuotedAnnotation,
+                "{source}"
+            );
+            assert!(checker.check("x: Annotated[int, 'metadata']").is_ok());
+        }
+    }
+}
+
+#[test]
+fn annotation_metadata_does_not_spend_nested_scan_budgets() {
+    let source = format!("x: Annotated[int, Doc(\"{}([)]\")]", "word ".repeat(40));
+    let limits = Limits {
+        max_annotation_depth: 0,
+        max_source_bytes: source.len(),
+        ..Limits::default()
+    };
+    assert!(check(&source, &limits).is_ok());
+
+    let quoted = format!("x: \"Annotated[int, Doc('{}([)]')]\"", "word ".repeat(40));
+    let one_scan = Limits {
+        max_annotation_depth: 1,
+        ..Limits::default()
+    };
+    assert!(check(&quoted, &one_scan).is_ok());
+
+    // The annotation expression itself still consumes structural and token budgets.
+    let deep = format!("x: Annotated[int, {}0{}]", "[".repeat(101), "]".repeat(101));
+    assert!(check(&deep, &Limits::default()).is_err());
+    let tokens = Limits {
+        max_tokens: 4,
+        ..Limits::default()
+    };
+    assert_eq!(
+        check(&source, &tokens).unwrap_err().reason,
+        Reason::TokenCount
+    );
+}
+
+#[test]
 fn case_can_be_a_variable() {
     let source = format!("case = 1\nx = case{}", " + 1".repeat(51));
     assert!(check(&source, &Limits::default()).is_ok());
@@ -389,7 +471,7 @@ fn checker_reuse_resets_state_after_every_rejection_kind() {
         max_ast_depth: Some(3),
         ..Limits::default()
     };
-    let mut checker = spam::Checker::new(limits.clone()).expect("valid limits");
+    let mut checker = tokspam::Checker::new(limits.clone()).expect("valid limits");
     let sources = [
         "x = 1\n",
         "((((((1))))))",
@@ -444,7 +526,7 @@ fn construct_width_limits_are_independent_and_disabled_by_default() {
 
 #[test]
 fn construct_width_hard_ceilings_are_validated() {
-    use spam::MAX_CONSTRUCT_WIDTH;
+    use tokspam::MAX_CONSTRUCT_WIDTH;
 
     let cases = [
         (0, LimitKind::CallArguments),
@@ -543,4 +625,95 @@ fn construct_widths_distinguish_python_grammar_roles() {
         check(adjacent, &below).unwrap_err().reason,
         Reason::InterpolationFields
     );
+}
+
+#[test]
+fn annotation_segments_preserve_parent_state_and_recover_after_child_errors() {
+    let limits = Limits {
+        max_nesting_depth: 8,
+        max_ast_depth: Some(8),
+        max_display_items: Some(2),
+        max_slice_items: Some(2),
+        ..Limits::default()
+    };
+    let padding = "word ".repeat(10);
+    let accepted = format!("if flag:\n x: tuple[int, \"list['{padding}']\"]\n y = [1, 2]\n");
+    let parent_width = format!("x: tuple[\"list['{padding}']\", int, str]");
+    let child_error = format!("x: tuple[int, \"list['{}']\"]", "([)]".repeat(10));
+    let parent_depth = format!(
+        "x: tuple[\"list['{padding}']\", {}int{}]",
+        "[".repeat(8),
+        "]".repeat(8)
+    );
+    let mut checker = tokspam::Checker::new(limits).unwrap();
+
+    for _ in 0..3 {
+        assert!(checker.check(&accepted).is_ok());
+        assert_eq!(
+            checker.check(&parent_width).unwrap_err().reason,
+            Reason::SliceItems
+        );
+        assert_eq!(
+            checker.check(&child_error).unwrap_err().reason,
+            Reason::QuotedAnnotation
+        );
+        assert_eq!(
+            checker.check(&parent_depth).unwrap_err().reason,
+            Reason::AstDepth
+        );
+    }
+}
+
+#[test]
+fn compact_counters_preserve_large_widths_and_indentation_columns() {
+    let count = usize::from(u16::MAX) + 1;
+    let source = format!("[{}0]", "0,".repeat(count));
+    let mut limits = Limits {
+        max_tokens: MAX_TOKENS,
+        max_ast_depth: None,
+        max_display_items: Some(count + 1),
+        ..Limits::default()
+    };
+    assert!(check(&source, &limits).is_ok());
+    limits.max_display_items = Some(count);
+    assert_eq!(
+        check(&source, &limits).unwrap_err().reason,
+        Reason::DisplayItems
+    );
+
+    // Indentation columns count tab expansion, not bytes or nesting levels.
+    // Both the initial indent and its subsequent dedent must retain >16 bits.
+    let source = format!("{}x = 1\ny = 2\n", "\t".repeat(count / 8 + 1));
+    assert!(check(&source, &limits).is_ok());
+
+    // Unfinished lambda parameter lists do not consume parser depth yet.
+    // Width tracking exhausts fixed scratch before a structural violation
+    // is established, so screening must stop without panicking.
+    let source = "lambda ".repeat(count);
+    assert_eq!(
+        check(&source, &limits).unwrap_err().reason,
+        Reason::Inconclusive
+    );
+}
+
+#[test]
+fn compact_binary_depths_preserve_the_hard_ast_boundary() {
+    let count = usize::from(MAX_AST_DEPTH);
+    let limits = Limits {
+        max_ast_depth: Some(MAX_AST_DEPTH),
+        ..Limits::default()
+    };
+    let accepted = format!("{}1", "1 + ".repeat(count));
+    assert!(check(&accepted, &limits).is_ok());
+    assert_eq!(
+        check(&format!("{accepted} + 1"), &limits)
+            .unwrap_err()
+            .reason,
+        Reason::AstDepth
+    );
+
+    // Fill every precedence slot, then fold them into a lower-precedence
+    // operator near the ceiling. Depth arithmetic must still happen in u32.
+    let mixed = format!("{}1 | 1 ^ 1 & 1 << 1 + 1 * 1 | 1", "1 + ".repeat(count));
+    assert_eq!(check(&mixed, &limits).unwrap_err().reason, Reason::AstDepth);
 }
