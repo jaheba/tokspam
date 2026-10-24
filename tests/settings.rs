@@ -84,6 +84,32 @@ fn annotation_scan_depth_is_configurable() {
 }
 
 #[test]
+fn nested_annotation_work_stack_obeys_depth_and_reports_outer_string() {
+    let source = format!("x: \"list['{}']\"", "word ".repeat(30));
+    let shallow = Limits {
+        max_annotation_depth: 1,
+        ..Limits::default()
+    };
+    let rejection = check(&source, &shallow).unwrap_err();
+    assert_eq!(rejection.reason, Reason::QuotedAnnotation);
+    assert_eq!(rejection.range, 3..source.len());
+
+    let deep_enough = Limits {
+        max_annotation_depth: 2,
+        ..Limits::default()
+    };
+    assert!(check(&source, &deep_enough).is_ok());
+}
+
+#[test]
+fn malformed_nested_annotation_is_mapped_to_the_outer_string() {
+    let source = format!("x: \"list['{}']\"", "([)]".repeat(30));
+    let rejection = check(&source, &Limits::default()).unwrap_err();
+    assert_eq!(rejection.reason, Reason::QuotedAnnotation);
+    assert_eq!(rejection.range, 3..source.len());
+}
+
+#[test]
 fn parser_and_ast_budgets_are_independent() {
     let limits = Limits {
         max_nesting_depth: 3,

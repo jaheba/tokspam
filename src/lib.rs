@@ -9,7 +9,7 @@
 mod lexer;
 mod rules;
 
-use lexer::{Kind, Lexer, LexerScratch};
+use lexer::{Kind, Lexer, LexerScratch, LexerState};
 use rules::Scanner;
 use std::ops::Range;
 
@@ -127,6 +127,7 @@ pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
 pub struct Checker {
     limits: Limits,
     scratch: Vec<ScanScratch>,
+    work: Vec<ScanWork>,
 }
 
 impl Checker {
@@ -140,7 +141,13 @@ impl Checker {
             .map(|_| ScanScratch::new(&limits))
             .collect();
 
-        Self { limits, scratch }
+        let work = Vec::with_capacity(usize::from(annotation_depth) + 1);
+
+        Self {
+            limits,
+            scratch,
+            work,
+        }
     }
 
     /// Experimental statement-level proofs with local detailed fallback.
@@ -164,16 +171,20 @@ impl Checker {
             });
         }
 
-        scan::<true, REGIONS>(
-            source,
-            &self.limits,
-            u32::from(self.limits.max_nesting_depth),
-            self.limits.max_ast_depth.map(u32::from),
-            0,
-            false,
-            &mut self.scratch,
-        )
+        scan::<true, REGIONS>(source, &self.limits, &mut self.scratch, &mut self.work)
     }
+}
+
+struct ScanWork {
+    source: Range<usize>,
+    budget: u32,
+    ast_budget: Option<u32>,
+    annotation_source: bool,
+    depth: u8,
+    token_count: usize,
+    lexer: Option<LexerState>,
+    region_start: bool,
+    outer_annotation: Option<Range<usize>>,
 }
 
 // Allocate every annotation frame before inspecting tokens. Reusing these frames
@@ -206,163 +217,189 @@ impl ScanScratch {
 fn scan<const FAST: bool, const REGIONS: bool>(
     source: &str,
     limits: &Limits,
-    budget: u32,
-    ast_budget: Option<u32>,
-    string_depth: u8,
-    annotation_source: bool,
     scratch: &mut [ScanScratch],
+    work: &mut Vec<ScanWork>,
 ) -> Result<(), Rejection> {
-    let (frame, remaining_scratch) = scratch.split_first_mut().expect("annotation depth checked");
-    let ScanScratch {
-        lexer,
-        scanner,
-        annotations,
-        #[cfg(feature = "experimental-width-limits")]
-        widths,
-    } = frame;
+    work.clear();
+    work.push(ScanWork {
+        source: 0..source.len(),
+        budget: u32::from(limits.max_nesting_depth),
+        ast_budget: limits.max_ast_depth.map(u32::from),
+        annotation_source: false,
+        depth: 0,
+        token_count: 0,
+        lexer: None,
+        region_start: true,
+        outer_annotation: None,
+    });
 
-    let mut lexer = Lexer::new(
-        source,
-        budget as usize,
-        usize::from(limits.max_indentation_depth),
-        lexer,
-    );
-    scanner.reset(budget, ast_budget);
-    annotations.reset();
-    #[cfg(feature = "experimental-width-limits")]
-    widths.reset();
-
-    let mut token_count = 0;
-    // Scan a simple prefix without constructing tokens. At the first complex
-    // line, use the detailed scanner for the remainder to avoid rescanning
-    // every statement in normal modules with strings and compound syntax.
-    // Without delimiters or cross-line keywords, each byte contributes at
-    // most one frame to either estimate. This upper bound only accepts lines;
-    // anything outside it falls back to the exact counters and error ranges.
-    let simple_budget = budget.min(ast_budget.unwrap_or(budget)) as usize;
-    #[cfg(feature = "experimental-regions")]
-    let widths_enabled = {
-        #[cfg(feature = "experimental-width-limits")]
-        {
-            limits.widths_enabled()
-        }
-        #[cfg(not(feature = "experimental-width-limits"))]
-        {
-            false
-        }
-    };
-    if FAST {
-        while let Some(count) = lexer.skip_simple_line(
-            simple_budget,
-            limits.max_tokens.saturating_sub(token_count),
-            limits.max_token_bytes,
-        ) {
-            token_count += count;
-            // Every qualifying line ends with all structural and annotation
-            // state reset, so only the token count carries to detailed scanning.
-        }
-    }
-
-    #[cfg(feature = "experimental-regions")]
-    let mut region_start = true;
-    // The region proof must run before next(); without the feature this same
-    // loop becomes the ordinary token loop.
-    #[cfg_attr(not(feature = "experimental-regions"), allow(clippy::while_let_loop))]
     loop {
-        #[cfg(feature = "experimental-regions")]
-        if REGIONS && !widths_enabled && region_start && annotations.region_ready() {
-            if let Some(remaining) = scanner.region_budget() {
-                if let Some((count, seen_code)) = lexer.skip_region(
-                    remaining,
-                    limits.max_tokens.saturating_sub(token_count),
+        let Some(index) = work.len().checked_sub(1) else {
+            return Ok(());
+        };
+        let current = &mut work[index];
+        let frame_source = &source[current.source.clone()];
+        let ScanScratch {
+            lexer: lexer_scratch,
+            scanner,
+            annotations,
+            #[cfg(feature = "experimental-width-limits")]
+            widths,
+        } = &mut scratch[index];
+
+        let mut lexer = if let Some(state) = current.lexer {
+            Lexer::resume(
+                frame_source,
+                current.budget as usize,
+                usize::from(limits.max_indentation_depth),
+                lexer_scratch,
+                state,
+            )
+        } else {
+            scanner.reset(current.budget, current.ast_budget);
+            annotations.reset();
+            #[cfg(feature = "experimental-width-limits")]
+            widths.reset();
+
+            let mut lexer = Lexer::new(
+                frame_source,
+                current.budget as usize,
+                usize::from(limits.max_indentation_depth),
+                lexer_scratch,
+            );
+            if FAST {
+                let simple_budget = current
+                    .budget
+                    .min(current.ast_budget.unwrap_or(current.budget))
+                    as usize;
+                while let Some(count) = lexer.skip_simple_line(
+                    simple_budget,
+                    limits.max_tokens.saturating_sub(current.token_count),
                     limits.max_token_bytes,
-                    limits.check_string_annotations,
-                    annotation_source,
                 ) {
-                    token_count += count;
-                    scanner.finish_region(seen_code);
-                    annotations.reset();
-                    continue;
+                    current.token_count += count;
                 }
             }
-        }
-        let Some(token) = lexer.next() else { break };
+            lexer
+        };
+
         #[cfg(feature = "experimental-regions")]
+        if REGIONS
+            && !widths_enabled(limits)
+            && current.region_start
+            && annotations.region_ready()
+            && let Some(remaining) = scanner.region_budget()
+            && let Some((count, seen_code)) = lexer.skip_region(
+                remaining,
+                limits.max_tokens.saturating_sub(current.token_count),
+                limits.max_token_bytes,
+                limits.check_string_annotations,
+                current.annotation_source,
+            )
         {
-            region_start = matches!(token.kind, Kind::Newline | Kind::Indent | Kind::Dedent);
+            current.token_count += count;
+            scanner.finish_region(seen_code);
+            annotations.reset();
+            current.lexer = Some(lexer.state());
+            continue;
         }
-        token_count += 1;
-        if token_count > limits.max_tokens {
-            return Err(Rejection {
-                reason: Reason::TokenCount,
-                range: token.range,
-            });
+
+        let Some(token) = lexer.next() else {
+            work.pop();
+            continue;
+        };
+        current.lexer = Some(lexer.state());
+        current.region_start = matches!(token.kind, Kind::Newline | Kind::Indent | Kind::Dedent);
+        current.token_count += 1;
+        let absolute = |range: &Range<usize>| {
+            current.source.start + range.start..current.source.start + range.end
+        };
+        let reject = |reason, range: Range<usize>| {
+            Err(Rejection {
+                reason: if current.outer_annotation.is_some() {
+                    Reason::QuotedAnnotation
+                } else {
+                    reason
+                },
+                range: current.outer_annotation.clone().unwrap_or(range),
+            })
+        };
+
+        if current.token_count > limits.max_tokens {
+            return reject(Reason::TokenCount, absolute(&token.range));
         }
         if limits
             .max_token_bytes
             .is_some_and(|limit| token.range.len() > limit)
         {
-            return Err(Rejection {
-                reason: Reason::TokenSize,
-                range: token.range,
-            });
+            return reject(Reason::TokenSize, absolute(&token.range));
         }
-        let reason = match token.kind {
+        let lexical_reason = match token.kind {
             Kind::Limit => Some(Reason::LexicalStructure),
             Kind::NestingLimit => Some(Reason::Nesting),
             Kind::IndentationLimit => Some(Reason::Indentation),
             _ => None,
         };
-        if let Some(reason) = reason {
-            return Err(Rejection {
-                reason,
-                range: token.range,
-            });
+        if let Some(reason) = lexical_reason {
+            return reject(reason, absolute(&token.range));
         }
         #[cfg(feature = "experimental-width-limits")]
-        if let Some(reason) = widths.observe(source, token.kind, &token.range, limits) {
-            return Err(Rejection {
-                reason,
-                range: token.range,
-            });
+        if let Some(reason) = widths.observe(frame_source, token.kind, &token.range, limits) {
+            return reject(reason, absolute(&token.range));
         }
-        if limits.check_string_annotations && (annotation_source || annotations.active()) {
-            if let Some(contents) = token.contents {
-                // Raw contents avoid allocating decoded strings. Escaped annotations
-                // need separate rules before this can model their parsed depth.
-                let remaining = budget.saturating_sub(scanner.total);
-                let ast_remaining =
-                    ast_budget.map(|budget| budget.saturating_sub(scanner.ast_total));
+
+        let mut child = None;
+        if limits.check_string_annotations && (current.annotation_source || annotations.active()) {
+            if let Some(contents) = token.contents.clone() {
+                let remaining = current.budget.saturating_sub(scanner.total);
+                let ast_remaining = current
+                    .ast_budget
+                    .map(|budget| budget.saturating_sub(scanner.ast_total));
                 let minimum = remaining.min(ast_remaining.unwrap_or(remaining));
-                if contents.len() > minimum as usize
-                    && (string_depth >= limits.max_annotation_depth
-                        || scan::<FAST, REGIONS>(
-                            &source[contents],
-                            limits,
-                            remaining,
-                            ast_remaining,
-                            string_depth + 1,
-                            true,
-                            remaining_scratch,
-                        )
-                        .is_err())
-                {
-                    return Err(Rejection {
-                        reason: Reason::QuotedAnnotation,
-                        range: token.range,
+                if contents.len() > minimum as usize {
+                    if current.depth >= limits.max_annotation_depth {
+                        return reject(Reason::QuotedAnnotation, absolute(&token.range));
+                    }
+                    child = Some(ScanWork {
+                        source: absolute(&contents),
+                        budget: remaining,
+                        ast_budget: ast_remaining,
+                        annotation_source: true,
+                        depth: current.depth + 1,
+                        token_count: 0,
+                        lexer: None,
+                        region_start: true,
+                        outer_annotation: Some(
+                            current
+                                .outer_annotation
+                                .clone()
+                                .unwrap_or_else(|| absolute(&token.range)),
+                        ),
                     });
                 }
             }
         }
         if let Some(reason) = scanner.observe(token.kind) {
-            return Err(Rejection {
-                reason,
-                range: token.range,
-            });
+            return reject(reason, absolute(&token.range));
         }
-        annotations.observe(source, token.kind, &token.range);
+        annotations.observe(frame_source, token.kind, &token.range);
+        if let Some(child) = child {
+            work.push(child);
+        }
     }
-    Ok(())
+}
+
+#[cfg(feature = "experimental-regions")]
+fn widths_enabled(limits: &Limits) -> bool {
+    #[cfg(feature = "experimental-width-limits")]
+    {
+        limits.widths_enabled()
+    }
+    #[cfg(not(feature = "experimental-width-limits"))]
+    {
+        let _ = limits;
+        false
+    }
 }
 
 #[cfg(all(
@@ -822,11 +859,8 @@ mod fast_path_tests {
                         let expected = scan::<false, false>(
                             &source,
                             &limits,
-                            u32::from(depth),
-                            limits.max_ast_depth.map(u32::from),
-                            0,
-                            false,
                             &mut checker.scratch,
+                            &mut checker.work,
                         );
                         assert_eq!(actual, expected, "{source:?}");
                     }

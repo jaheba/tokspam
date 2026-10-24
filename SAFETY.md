@@ -19,9 +19,9 @@ malformed recovery paths.
 Source nesting may increase the size of an explicit heap-allocated work stack, subject to a hard internal limit, but
 must not increase the native Rust call-stack depth.
 
-The current implementation does not yet satisfy this invariant.
-The lexer and structural scanners are iterative, but quoted annotations call `scan` recursively.
-Replace that call with an explicit work stack before treating Spam as an availability boundary.
+The lexer, structural scanners, and quoted-annotation scanner are iterative. Quoted annotations use a preallocated work
+stack with one frame per configured annotation level. Suspending an outer scan stores scalar lexer state; delimiter,
+indentation, parser-depth, and AST-depth state remain in that frame's preallocated scratch storage.
 
 ## Resource bounds
 
@@ -37,11 +37,11 @@ For accepted configuration, one call to `check` must have these bounds:
 - Ordinary scanning is linear in source bytes and emitted tokens.
 - Annotation contents are charged to one shared byte and token budget when scanned as Python source.
 
-The current implementation preallocates scratch storage for every permitted annotation depth before token scanning.
-Its heap allocation count and sizes depend only on `Limits`; scanning does not grow those allocations.
+The current implementation preallocates scratch and work-stack storage for every permitted annotation depth before token
+scanning. Its heap allocation count and sizes depend only on `Limits`; scanning does not grow those allocations.
 Oversized source is rejected before this allocation step.
 The allocation regression test covers accepted and rejected input under several configurations.
-The remaining ceilings, shared work budgets, and no-recursion requirements above are still outstanding.
+The remaining hard ceilings and shared work budgets above are still outstanding.
 
 The source string is owned by the caller and is not counted as Spam working memory.
 
@@ -65,5 +65,4 @@ The safety checks require:
 6. A host deadline around Spam and the downstream parser.
    The deadline remains the final availability limit if an implementation bug violates an expected complexity bound.
 
-Before release, replace recursive annotation scanning, add hard implementation ceilings, and run the
-source-plus-configuration fuzz target.
+Before release, add hard implementation ceilings and run the source-plus-configuration fuzz target.

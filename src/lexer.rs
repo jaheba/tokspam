@@ -110,6 +110,14 @@ pub(super) struct LexerScratch {
     indents: Vec<usize>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct LexerState {
+    position: usize,
+    line_start: bool,
+    pending_indent: Option<usize>,
+    stopped: bool,
+}
+
 impl LexerScratch {
     pub(super) fn new(limit: usize, indentation_limit: usize) -> Self {
         Self {
@@ -153,6 +161,35 @@ impl<'a, 's> Lexer<'a, 's> {
             limit,
             indentation_limit,
             stopped: false,
+        }
+    }
+
+    pub(super) fn resume(
+        source: &'a str,
+        limit: usize,
+        indentation_limit: usize,
+        scratch: &'s mut LexerScratch,
+        state: LexerState,
+    ) -> Self {
+        Self {
+            source,
+            position: state.position,
+            contexts: &mut scratch.contexts,
+            indents: &mut scratch.indents,
+            line_start: state.line_start,
+            pending_indent: state.pending_indent,
+            limit,
+            indentation_limit,
+            stopped: state.stopped,
+        }
+    }
+
+    pub(super) fn state(&self) -> LexerState {
+        LexerState {
+            position: self.position,
+            line_start: self.line_start,
+            pending_indent: self.pending_indent,
+            stopped: self.stopped,
         }
     }
 
