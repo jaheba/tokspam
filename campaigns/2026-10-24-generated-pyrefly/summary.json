@@ -1,0 +1,15 @@
+{
+  "format": "spam-generated-differential-v1",
+  "seed": 20262024,
+  "cases": 100,
+  "python": "Python 3.15.0",
+  "pyrefly_command": [
+    "uvx",
+    "pyrefly",
+    "check"
+  ],
+  "run_id": 30,
+  "retained": 0,
+  "width_mismatches": 0,
+  "parser_failures": 0
+}
