@@ -123,6 +123,14 @@ def store(database, metadata, records):
                             "(run_id, case_id, implementation, status) VALUES (?, ?, ?, ?)",
                             (run_id, case_id, implementation, status),
                         )
+                        version = metadata.get("python") if implementation == "cpython" else None
+                        phase = "screen" if implementation == "spam" else "parse"
+                        db.execute(
+                            "INSERT OR REPLACE INTO observation_context "
+                            "(run_id, case_id, implementation, phase, implementation_version) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (run_id, case_id, implementation, phase, version),
+                        )
     return run_id
 
 

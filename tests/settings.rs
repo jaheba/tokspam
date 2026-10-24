@@ -1,6 +1,7 @@
 use spam::{
     Checker, LimitKind, Limits, MAX_ANNOTATION_DEPTH, MAX_AST_DEPTH, MAX_INDENTATION_DEPTH,
-    MAX_NESTING_DEPTH, MAX_SOURCE_BYTES, MAX_TOKEN_BYTES, MAX_TOKENS, Reason, check,
+    MAX_NESTING_DEPTH, MAX_SOURCE_BYTES, MAX_TOKEN_BYTES, MAX_TOKENS, MAX_WORK_UNITS, Reason,
+    check,
 };
 
 #[test]
@@ -32,6 +33,13 @@ fn hard_configuration_ceilings_are_checked_before_scanning() {
                 ..Limits::default()
             },
             LimitKind::Tokens,
+        ),
+        (
+            Limits {
+                max_work_units: MAX_WORK_UNITS + 1,
+                ..Limits::default()
+            },
+            LimitKind::WorkUnits,
         ),
         (
             Limits {
@@ -84,6 +92,7 @@ fn exact_hard_ceilings_and_zero_limits_validate() {
     let ceilings = Limits {
         max_source_bytes: MAX_SOURCE_BYTES,
         max_tokens: MAX_TOKENS,
+        max_work_units: MAX_WORK_UNITS,
         max_token_bytes: Some(MAX_TOKEN_BYTES),
         max_nesting_depth: MAX_NESTING_DEPTH,
         max_indentation_depth: MAX_INDENTATION_DEPTH,
@@ -96,6 +105,7 @@ fn exact_hard_ceilings_and_zero_limits_validate() {
     let zero = Limits {
         max_source_bytes: 0,
         max_tokens: 0,
+        max_work_units: 0,
         max_token_bytes: Some(0),
         max_nesting_depth: 0,
         max_indentation_depth: 0,
@@ -104,6 +114,25 @@ fn exact_hard_ceilings_and_zero_limits_validate() {
         ..Limits::default()
     };
     assert!(zero.validate().is_ok());
+}
+
+#[test]
+fn work_budget_is_distinct_from_structural_rejections() {
+    let source = "x = 1\n";
+    let limits = Limits {
+        max_work_units: source.len() + 2,
+        ..Limits::default()
+    };
+    assert_eq!(
+        check(source, &limits).unwrap_err().reason,
+        Reason::Inconclusive
+    );
+
+    let exact = Limits {
+        max_work_units: source.len() + 4,
+        ..Limits::default()
+    };
+    assert!(check(source, &exact).is_ok());
 }
 
 #[test]

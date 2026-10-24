@@ -20,8 +20,10 @@ check("x = [1, 2, 3]", &limits)?;
 # Ok::<(), spam::Rejection>(())
 ```
 
-`Limits` also controls token count, indentation depth, scanning quoted annotations, and the maximum number of nested
-annotations.
+`Limits` also controls token count, cumulative scan work, indentation depth, scanning quoted annotations, and the
+maximum number of nested annotations. Scan work is the sum of bytes admitted to scans and tokens emitted, including
+quoted annotations interpreted as Python. Exhausting that budget returns `Reason::Inconclusive` rather than claiming a
+specific structural violation.
 `check` returns a reason and a byte range for rejected input.
 For repeated use, create a `Checker` once per worker.
 Construction allocates scratch storage; every subsequent check performs zero heap allocations, including the first check
@@ -181,7 +183,9 @@ The minimized mixed-input failure is checked in under `corpus/minimized/` with a
 
 Replay retained cases by adding `--database corpus/cases.sqlite` to the campaign command above, then import that
 replay's output to record new observations.
-The database stores source bytes, generator origin, run settings, and per-implementation results.
+The database stores source bytes, generator origin, run settings, and per-implementation results. Every observation has
+an explicit phase and, when available, an implementation version or probe digest. Opening an older database for writing
+backfills this context from its run metadata.
 An observation is specific to the parser version, platform, phase, timeout, and memory limit of its run; a later run may
 differ.
 Use `--manifest examples/manifest.json` for four ordinary examples covering f-strings, quoted annotations, and
@@ -234,6 +238,15 @@ Use repeated `--stdlib-file` options, such as `--stdlib-file dataclasses.py`, to
 The report includes screening time as a fraction of Ruff parsing time; early rejections should be assessed separately
 from accepted-input overhead.
 The measured results and machine details are in [the exploration log](EXPLORATION.md#performance).
+
+Check growth across flat statements, operator chains, f-strings, and quoted annotations with:
+
+```sh
+python3 tools/check_scaling.py --benchmark target/release/examples/benchmark --assert-linear
+```
+
+The script records a log-log runtime exponent for each family. It is a regression signal rather than a proof of a
+worst-case bound; the process deadline remains the availability backstop.
 
 `tools/benchmark.py --byte-guard` also measures an experimental acceptance-only byte guard plus fallback to the normal
 checker.

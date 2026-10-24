@@ -29,6 +29,8 @@ pub enum Reason {
     DisplayItems,
     SliceItems,
     InterpolationFields,
+    /// Screening stopped because the configured work budget was exhausted.
+    Inconclusive,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +53,7 @@ impl std::error::Error for Rejection {}
 
 pub const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_TOKENS: usize = 1_000_000;
+pub const MAX_WORK_UNITS: usize = MAX_SOURCE_BYTES + MAX_TOKENS;
 pub const MAX_TOKEN_BYTES: usize = MAX_SOURCE_BYTES;
 pub const MAX_NESTING_DEPTH: u16 = 1_024;
 pub const MAX_INDENTATION_DEPTH: u16 = 1_024;
@@ -72,6 +75,7 @@ pub enum LimitKind {
     DisplayItems,
     SliceItems,
     InterpolationFields,
+    WorkUnits,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +102,8 @@ impl std::error::Error for ConfigError {}
 pub struct Limits {
     pub max_source_bytes: usize,
     pub max_tokens: usize,
+    /// Maximum cumulative scanned bytes plus emitted tokens.
+    pub max_work_units: usize,
     pub max_token_bytes: Option<usize>,
     pub max_nesting_depth: u16,
     pub max_indentation_depth: u16,
@@ -118,6 +124,7 @@ impl Default for Limits {
         Self {
             max_source_bytes: 1024 * 1024,
             max_tokens: 100_000,
+            max_work_units: 1024 * 1024 + 100_000,
             max_token_bytes: None,
             max_nesting_depth: 100,
             max_indentation_depth: 80,
@@ -141,6 +148,7 @@ impl Limits {
             LimitKind::SourceBytes,
         )?;
         validate_limit(self.max_tokens, MAX_TOKENS, LimitKind::Tokens)?;
+        validate_limit(self.max_work_units, MAX_WORK_UNITS, LimitKind::WorkUnits)?;
         if let Some(value) = self.max_token_bytes {
             validate_limit(value, MAX_TOKEN_BYTES, LimitKind::TokenBytes)?;
         }
@@ -334,6 +342,12 @@ fn scan<const FAST: bool, const REGIONS: bool>(
     });
     let mut tokens_used = 0usize;
     let mut bytes_scanned = source.len();
+    if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
+        return Err(Rejection {
+            reason: Reason::Inconclusive,
+            range: 0..source.len(),
+        });
+    }
 
     loop {
         let Some(index) = work.len().checked_sub(1) else {
@@ -378,6 +392,12 @@ fn scan<const FAST: bool, const REGIONS: bool>(
                     limits.max_token_bytes,
                 ) {
                     tokens_used += count;
+                    if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
+                        return Err(Rejection {
+                            reason: Reason::Inconclusive,
+                            range: current.source.clone(),
+                        });
+                    }
                 }
             }
             lexer
@@ -401,6 +421,12 @@ fn scan<const FAST: bool, const REGIONS: bool>(
                 )
             {
                 tokens_used += count;
+                if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
+                    return Err(Rejection {
+                        reason: Reason::Inconclusive,
+                        range: current.source.clone(),
+                    });
+                }
                 scanner.finish_region(seen_code);
                 annotations.reset();
                 continue;
@@ -417,7 +443,8 @@ fn scan<const FAST: bool, const REGIONS: bool>(
             };
             let reject = |reason, range: Range<usize>| {
                 Err(Rejection {
-                    reason: if current.outer_annotation.is_some() {
+                    reason: if current.outer_annotation.is_some() && reason != Reason::Inconclusive
+                    {
                         Reason::QuotedAnnotation
                     } else {
                         reason
@@ -428,6 +455,9 @@ fn scan<const FAST: bool, const REGIONS: bool>(
 
             if tokens_used > limits.max_tokens {
                 return reject(Reason::TokenCount, absolute(&token.range));
+            }
+            if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
+                return reject(Reason::Inconclusive, absolute(&token.range));
             }
             if limits
                 .max_token_bytes
@@ -469,6 +499,9 @@ fn scan<const FAST: bool, const REGIONS: bool>(
                             return reject(Reason::QuotedAnnotation, absolute(&token.range));
                         }
                         bytes_scanned = next_bytes;
+                        if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
+                            return reject(Reason::Inconclusive, absolute(&token.range));
+                        }
                         child = Some(ScanWork {
                             source: absolute(&contents),
                             budget: remaining,
@@ -503,6 +536,10 @@ fn scan<const FAST: bool, const REGIONS: bool>(
             work.pop();
         }
     }
+}
+
+fn work_exceeded(bytes_scanned: usize, tokens_used: usize, limit: usize) -> bool {
+    bytes_scanned.saturating_add(tokens_used) > limit
 }
 
 #[cfg(feature = "experimental-regions")]

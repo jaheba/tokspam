@@ -2,7 +2,7 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    const FIELDS: usize = 12;
+    const FIELDS: usize = 13;
     const CONFIG_BYTES: usize = FIELDS * 4;
     if data.len() < CONFIG_BYTES {
         return;
@@ -22,6 +22,7 @@ fuzz_target!(|data: &[u8]| {
     let limits = spam::Limits {
         max_source_bytes: value(0, spam::MAX_SOURCE_BYTES),
         max_tokens: value(1, spam::MAX_TOKENS),
+        max_work_units: value(12, spam::MAX_WORK_UNITS),
         max_token_bytes: optional(2, spam::MAX_TOKEN_BYTES),
         max_nesting_depth: value(3, usize::from(spam::MAX_NESTING_DEPTH)) as u16,
         max_indentation_depth: value(4, usize::from(spam::MAX_INDENTATION_DEPTH)) as u16,

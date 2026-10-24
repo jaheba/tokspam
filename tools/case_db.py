@@ -11,6 +11,26 @@ FAILURES = {'crash', 'error', 'timeout', 'RecursionError', 'MemoryError'}
 SCHEMA = Path(__file__).resolve().parent.parent / 'corpus' / 'schema.sql'
 
 
+def observation_context(metadata, implementation):
+    if implementation == 'spam':
+        return 'screen', metadata.get('spam_probe_sha256')
+    if implementation == 'monty':
+        return metadata.get('monty_mode', 'compile'), metadata.get('monty_probe_sha256')
+    if implementation == 'cpython':
+        return metadata.get('phase', 'parse'), metadata.get('python_version') or metadata.get('python')
+    if implementation == 'ruff':
+        return metadata.get('phase', 'parse'), metadata.get('ruff_probe_sha256')
+    return metadata.get('phase', 'parse'), None
+
+
+def store_observation_context(db, run_id, case_id, implementation, phase, version=None):
+    db.execute(
+        'INSERT OR REPLACE INTO observation_context '
+        '(run_id, case_id, implementation, phase, implementation_version) VALUES (?, ?, ?, ?, ?)',
+        (run_id, case_id, implementation, phase, version),
+    )
+
+
 def connect(path, readonly=False):
     db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) if readonly else sqlite3.connect(path)
     if not readonly:
@@ -20,6 +40,18 @@ def connect(path, readonly=False):
             SELECT c.id, 'parser-failure', c.first_seen_run FROM cases c
             WHERE NOT EXISTS (SELECT 1 FROM case_labels l WHERE l.case_id = c.id)
         ''')
+        missing = db.execute('''
+            SELECT o.run_id, o.case_id, o.implementation, r.metadata
+            FROM observations o
+            JOIN runs r ON r.id = o.run_id
+            LEFT JOIN observation_context c
+              ON c.run_id = o.run_id AND c.case_id = o.case_id AND c.implementation = o.implementation
+            WHERE c.run_id IS NULL
+        ''').fetchall()
+        for run_id, case_id, implementation, raw_metadata in missing:
+            phase, version = observation_context(json.loads(raw_metadata), implementation)
+            store_observation_context(db, run_id, case_id, implementation, phase, version)
+        db.commit()
     return db
 
 
@@ -74,6 +106,8 @@ def import_campaign(db, campaign):
                     (run_id, case_id, implementation, result['status'], result.get('seconds'),
                      result.get('returncode'), result.get('stderr')),
                 )
+                phase, version = observation_context(metadata, implementation)
+                store_observation_context(db, run_id, case_id, implementation, phase, version)
     print(f'imported {len(selected)} new shapes and {len(repeated)} known cases into run {run_id}')
 
 
@@ -144,6 +178,14 @@ def import_resource_campaign(db, campaign):
                     'VALUES (?, ?, ?, ?, ?, ?, ?)',
                     (run_id, case_id, observation['implementation'], observation['status'],
                      observation.get('median_seconds'), observation.get('returncode'), observation.get('stderr')),
+                )
+                store_observation_context(
+                    db,
+                    run_id,
+                    case_id,
+                    observation['implementation'],
+                    observation['phase'],
+                    observation.get('implementation_version'),
                 )
             imported += 1
     print(f'imported {imported} resource cases into run {run_id}')

@@ -734,3 +734,18 @@ runs improved substantially more, while identifier-heavy and ordinary-string
 checks were roughly unchanged. These synthetic gains are workload-specific.
 All 3,205 compared inputs retained identical token kinds and ranges, and allocation
 regressions passed. The report retains timings, sampling stacks, and limitations.
+
+## Work-budget and scaling check
+
+Spam now exposes `max_work_units`, a shared fuel proxy equal to source bytes admitted to scans plus emitted tokens.
+It supplements the independent byte and token limits and returns `Inconclusive` when exhausted. The default is the sum
+of the default byte and token limits, so it does not reject an input that satisfies both existing budgets. Configuration
+is capped at the sum of their hard ceilings.
+
+`tools/check_scaling.py` measured five increasing sizes for flat assignments, binary-operator chains, f-string fields,
+and quoted annotations. Log-log runtime exponents were 0.98, 0.00, 1.00, and 0.98 respectively. The operator family
+hit the structural depth limit early, explaining its constant result. This run found no superlinear accepted family;
+the check uses a 1.30 regression threshold and is not a proof of worst-case behavior.
+
+Corpus observations now have a separate phase/version context table. Opening the retained database through the writable
+tool path backfilled context for all 1,755 existing observations from run metadata without rewriting their outcomes.

@@ -53,6 +53,13 @@ class ResourceCampaignImportTest(unittest.TestCase):
                     ).fetchone(),
                     ("within-limit", 3, 0.002),
                 )
+                self.assertEqual(
+                    database.execute(
+                        "SELECT phase, implementation_version FROM observation_context WHERE case_id = ?",
+                        (case_id,),
+                    ).fetchone(),
+                    ("parse", None),
+                )
 
     def test_rejects_source_digest_mismatch(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -85,6 +92,42 @@ class ResourceCampaignImportTest(unittest.TestCase):
                     database.execute("SELECT source FROM cases WHERE id = ?", (record["case_id"],)).fetchone(),
                     (b"x = 1\n",),
                 )
+
+    def test_parser_campaign_records_phase_and_versions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = b"x = 1\n"
+            digest = hashlib.sha256(source).hexdigest()
+            (root / "case.py").write_bytes(source)
+            (root / "summary.json").write_text(json.dumps({
+                "phase": "compile",
+                "python_version": "Python test",
+                "ruff_probe_sha256": "ruff-digest",
+                "spam_probe_sha256": "spam-digest",
+            }))
+            record = {
+                "case_id": digest,
+                "artifact": "case.py",
+                "family": "test",
+                "depth": 1,
+                "seed": 1,
+                "cpython": {"status": "MemoryError"},
+                "ruff": {"status": "ok"},
+                "spam": {"status": "reject:Nesting:0:1"},
+            }
+            (root / "results.jsonl").write_text(json.dumps(record) + "\n")
+
+            with case_db.connect(root / "cases.sqlite") as database:
+                case_db.import_campaign(database, root)
+                contexts = database.execute(
+                    "SELECT implementation, phase, implementation_version FROM observation_context "
+                    "ORDER BY implementation"
+                ).fetchall()
+                self.assertEqual(contexts, [
+                    ("cpython", "compile", "Python test"),
+                    ("ruff", "compile", "ruff-digest"),
+                    ("spam", "screen", "spam-digest"),
+                ])
 
 
 if __name__ == "__main__":

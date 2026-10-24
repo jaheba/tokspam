@@ -40,6 +40,17 @@ CREATE TABLE IF NOT EXISTS case_labels (
 
 CREATE INDEX IF NOT EXISTS observations_by_case ON observations(case_id, implementation);
 
+CREATE TABLE IF NOT EXISTS observation_context (
+    run_id INTEGER NOT NULL,
+    case_id TEXT NOT NULL,
+    implementation TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    implementation_version TEXT,
+    PRIMARY KEY (run_id, case_id, implementation),
+    FOREIGN KEY (run_id, case_id, implementation)
+        REFERENCES observations(run_id, case_id, implementation)
+);
+
 CREATE TABLE IF NOT EXISTS case_generators (
     case_id TEXT PRIMARY KEY,
     generator TEXT NOT NULL,

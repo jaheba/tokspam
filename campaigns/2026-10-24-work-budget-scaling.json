@@ -1,0 +1,124 @@
+{
+  "families": {
+    "flat": {
+      "samples": [
+        {
+          "status": "accept",
+          "bytes": 2596,
+          "nanoseconds": 5083.1
+        },
+        {
+          "status": "accept",
+          "bytes": 5412,
+          "nanoseconds": 10433.9
+        },
+        {
+          "status": "accept",
+          "bytes": 11092,
+          "nanoseconds": 21250.1
+        },
+        {
+          "status": "accept",
+          "bytes": 24404,
+          "nanoseconds": 45377.0
+        },
+        {
+          "status": "accept",
+          "bytes": 51028,
+          "nanoseconds": 93515.5
+        }
+      ],
+      "log_log_exponent": 0.9773525941795749
+    },
+    "operators": {
+      "samples": [
+        {
+          "status": "reject",
+          "bytes": 516,
+          "nanoseconds": 3431.1
+        },
+        {
+          "status": "reject",
+          "bytes": 1028,
+          "nanoseconds": 3450.1
+        },
+        {
+          "status": "reject",
+          "bytes": 2052,
+          "nanoseconds": 3596.0
+        },
+        {
+          "status": "reject",
+          "bytes": 4100,
+          "nanoseconds": 3464.2
+        },
+        {
+          "status": "reject",
+          "bytes": 8196,
+          "nanoseconds": 3417.8
+        }
+      ],
+      "log_log_exponent": -0.0005464526405701968
+    },
+    "fstrings": {
+      "samples": [
+        {
+          "status": "accept",
+          "bytes": 776,
+          "nanoseconds": 12747.2
+        },
+        {
+          "status": "accept",
+          "bytes": 1544,
+          "nanoseconds": 25228.7
+        },
+        {
+          "status": "accept",
+          "bytes": 3080,
+          "nanoseconds": 50285.4
+        },
+        {
+          "status": "accept",
+          "bytes": 6152,
+          "nanoseconds": 100725.1
+        },
+        {
+          "status": "accept",
+          "bytes": 12296,
+          "nanoseconds": 203266.6
+        }
+      ],
+      "log_log_exponent": 1.0021289658379169
+    },
+    "annotations": {
+      "samples": [
+        {
+          "status": "accept",
+          "bytes": 5778,
+          "nanoseconds": 36100.1
+        },
+        {
+          "status": "accept",
+          "bytes": 11666,
+          "nanoseconds": 72064.4
+        },
+        {
+          "status": "accept",
+          "bytes": 23466,
+          "nanoseconds": 146549.6
+        },
+        {
+          "status": "accept",
+          "bytes": 48042,
+          "nanoseconds": 285247.1
+        },
+        {
+          "status": "accept",
+          "bytes": 97194,
+          "nanoseconds": 570718.8
+        }
+      ],
+      "log_log_exponent": 0.9767667132770514
+    }
+  }
+}

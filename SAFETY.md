@@ -27,8 +27,8 @@ that frame's preallocated scratch storage.
 ## Resource bounds
 
 Every public limit has a smaller-or-equal hard implementation ceiling.
-A caller may tighten a limit but may not configure an unbounded source size, token count, token size, nesting depth,
-indentation depth, annotation depth, or work-stack size.
+A caller may tighten a limit but may not configure an unbounded source size, token count, token size, scan-work budget,
+nesting depth, indentation depth, annotation depth, or work-stack size.
 Configuration outside those ceilings must be rejected before source scanning begins.
 
 For accepted configuration, one call to `check` must have these bounds:
@@ -48,7 +48,8 @@ Public settings now have hard implementation ceilings.
 returns a configuration rejection.
 Optional limits remain bounded by the hard source and token ceilings when disabled.
 
-The outer source and every nested annotation scan share cumulative byte and token work budgets.
+The outer source and every nested annotation scan share cumulative byte and token work budgets. `max_work_units` also
+bounds their sum and reports `Inconclusive` when the checker runs out of fuel without identifying a structural limit.
 An annotation range is charged again when its contents are interpreted as Python source, so configured work cannot be
 multiplied by annotation depth.
 
