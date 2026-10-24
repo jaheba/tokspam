@@ -116,7 +116,7 @@ fn source_cannot_change_allocation_count_or_size() {
             );
         }
 
-        let mut checker = Checker::new(limits.clone());
+        let mut checker = Checker::new(limits.clone()).expect("valid limits");
         let mut guard = byte_guard::ByteGuard::new(limits.clone());
 
         // Include the first call and reuse after failures: neither may allocate

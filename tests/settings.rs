@@ -1,4 +1,7 @@
-use spam::{Limits, Reason, check};
+use spam::{
+    Checker, LimitKind, Limits, MAX_ANNOTATION_DEPTH, MAX_AST_DEPTH, MAX_INDENTATION_DEPTH,
+    MAX_NESTING_DEPTH, MAX_SOURCE_BYTES, MAX_TOKEN_BYTES, MAX_TOKENS, Reason, check,
+};
 
 #[test]
 fn source_size_boundary() {
@@ -11,6 +14,96 @@ fn source_size_boundary() {
         check("x = 10", &limits).unwrap_err().reason,
         Reason::SourceSize
     );
+}
+
+#[test]
+fn hard_configuration_ceilings_are_checked_before_scanning() {
+    let cases = [
+        (
+            Limits {
+                max_source_bytes: MAX_SOURCE_BYTES + 1,
+                ..Limits::default()
+            },
+            LimitKind::SourceBytes,
+        ),
+        (
+            Limits {
+                max_tokens: MAX_TOKENS + 1,
+                ..Limits::default()
+            },
+            LimitKind::Tokens,
+        ),
+        (
+            Limits {
+                max_token_bytes: Some(MAX_TOKEN_BYTES + 1),
+                ..Limits::default()
+            },
+            LimitKind::TokenBytes,
+        ),
+        (
+            Limits {
+                max_nesting_depth: MAX_NESTING_DEPTH + 1,
+                ..Limits::default()
+            },
+            LimitKind::NestingDepth,
+        ),
+        (
+            Limits {
+                max_indentation_depth: MAX_INDENTATION_DEPTH + 1,
+                ..Limits::default()
+            },
+            LimitKind::IndentationDepth,
+        ),
+        (
+            Limits {
+                max_annotation_depth: MAX_ANNOTATION_DEPTH + 1,
+                ..Limits::default()
+            },
+            LimitKind::AnnotationDepth,
+        ),
+        (
+            Limits {
+                max_ast_depth: Some(MAX_AST_DEPTH + 1),
+                ..Limits::default()
+            },
+            LimitKind::AstDepth,
+        ),
+    ];
+
+    for (limits, expected) in cases {
+        let error = Checker::new(limits.clone()).err().unwrap();
+        assert_eq!(error.limit, expected);
+        let rejection = check("x = 1", &limits).unwrap_err();
+        assert_eq!(rejection.reason, Reason::Configuration);
+        assert_eq!(rejection.range, 0..0);
+    }
+}
+
+#[test]
+fn exact_hard_ceilings_and_zero_limits_validate() {
+    let ceilings = Limits {
+        max_source_bytes: MAX_SOURCE_BYTES,
+        max_tokens: MAX_TOKENS,
+        max_token_bytes: Some(MAX_TOKEN_BYTES),
+        max_nesting_depth: MAX_NESTING_DEPTH,
+        max_indentation_depth: MAX_INDENTATION_DEPTH,
+        max_annotation_depth: MAX_ANNOTATION_DEPTH,
+        max_ast_depth: Some(MAX_AST_DEPTH),
+        ..Limits::default()
+    };
+    assert!(ceilings.validate().is_ok());
+
+    let zero = Limits {
+        max_source_bytes: 0,
+        max_tokens: 0,
+        max_token_bytes: Some(0),
+        max_nesting_depth: 0,
+        max_indentation_depth: 0,
+        max_annotation_depth: 0,
+        max_ast_depth: Some(0),
+        ..Limits::default()
+    };
+    assert!(zero.validate().is_ok());
 }
 
 #[test]
@@ -107,6 +200,38 @@ fn malformed_nested_annotation_is_mapped_to_the_outer_string() {
     let rejection = check(&source, &Limits::default()).unwrap_err();
     assert_eq!(rejection.reason, Reason::QuotedAnnotation);
     assert_eq!(rejection.range, 3..source.len());
+}
+
+#[test]
+fn annotation_scans_share_source_and_token_work_budgets() {
+    let source = "x: 'word word'";
+    let byte_limited = Limits {
+        max_source_bytes: source.len(),
+        max_nesting_depth: 2,
+        ..Limits::default()
+    };
+    assert_eq!(
+        check(source, &byte_limited).unwrap_err().reason,
+        Reason::QuotedAnnotation
+    );
+
+    let token_limited = Limits {
+        max_tokens: 3,
+        max_nesting_depth: 2,
+        ..Limits::default()
+    };
+    assert_eq!(
+        check(source, &token_limited).unwrap_err().reason,
+        Reason::QuotedAnnotation
+    );
+
+    let annotations_disabled = Limits {
+        check_string_annotations: false,
+        max_source_bytes: source.len(),
+        max_tokens: 3,
+        ..Limits::default()
+    };
+    assert!(check(source, &annotations_disabled).is_ok());
 }
 
 #[test]
@@ -219,7 +344,7 @@ fn checker_reuse_resets_state_after_every_rejection_kind() {
         max_ast_depth: Some(3),
         ..Limits::default()
     };
-    let mut checker = spam::Checker::new(limits.clone());
+    let mut checker = spam::Checker::new(limits.clone()).expect("valid limits");
     let sources = [
         "x = 1\n",
         "((((((1))))))",
@@ -275,6 +400,32 @@ fn construct_width_limits_are_independent_and_disabled_by_default() {
 
 #[cfg(feature = "experimental-width-limits")]
 #[test]
+fn construct_width_hard_ceilings_are_validated() {
+    use spam::MAX_CONSTRUCT_WIDTH;
+
+    let cases = [
+        (0, LimitKind::CallArguments),
+        (1, LimitKind::Parameters),
+        (2, LimitKind::DisplayItems),
+        (3, LimitKind::SliceItems),
+        (4, LimitKind::InterpolationFields),
+    ];
+    for (selected, expected) in cases {
+        let mut limits = Limits::default();
+        match selected {
+            0 => limits.max_call_arguments = Some(MAX_CONSTRUCT_WIDTH + 1),
+            1 => limits.max_parameters = Some(MAX_CONSTRUCT_WIDTH + 1),
+            2 => limits.max_display_items = Some(MAX_CONSTRUCT_WIDTH + 1),
+            3 => limits.max_slice_items = Some(MAX_CONSTRUCT_WIDTH + 1),
+            4 => limits.max_interpolation_fields = Some(MAX_CONSTRUCT_WIDTH + 1),
+            _ => unreachable!(),
+        }
+        assert_eq!(limits.validate().unwrap_err().limit, expected);
+    }
+}
+
+#[cfg(feature = "experimental-width-limits")]
+#[test]
 fn construct_widths_count_only_the_immediate_level() {
     let limits = Limits {
         max_call_arguments: Some(2),
@@ -295,4 +446,60 @@ fn construct_widths_count_only_the_immediate_level() {
     ] {
         assert!(check(source, &limits).is_ok(), "{source}");
     }
+}
+
+#[cfg(feature = "experimental-width-limits")]
+#[test]
+fn construct_widths_distinguish_python_grammar_roles() {
+    let zero = Limits {
+        max_call_arguments: Some(0),
+        max_parameters: None,
+        max_display_items: Some(0),
+        max_slice_items: Some(0),
+        max_interpolation_fields: None,
+        ..Limits::default()
+    };
+    for source in [
+        "class C(A, B, metaclass=M): pass",
+        "from package import (a, b, c)",
+        "value = (((item)))",
+        "value = [x for x in values if x]",
+        "value = items[1:2]",
+    ] {
+        assert!(check(source, &zero).is_ok(), "{source}");
+    }
+
+    for source in [
+        "def f(a, /, b=1, *args, c, **kwargs): pass",
+        "value = lambda a, /, b=1, *args, c, **kwargs: a",
+    ] {
+        let exact = Limits {
+            max_parameters: Some(5),
+            ..Limits::default()
+        };
+        assert!(check(source, &exact).is_ok(), "{source}");
+        let below = Limits {
+            max_parameters: Some(4),
+            ..Limits::default()
+        };
+        assert_eq!(
+            check(source, &below).unwrap_err().reason,
+            Reason::Parameters
+        );
+    }
+
+    let adjacent = "value = f'{a}' 'literal' f'{b}' f'{c}'";
+    let exact = Limits {
+        max_interpolation_fields: Some(3),
+        ..Limits::default()
+    };
+    assert!(check(adjacent, &exact).is_ok());
+    let below = Limits {
+        max_interpolation_fields: Some(2),
+        ..Limits::default()
+    };
+    assert_eq!(
+        check(adjacent, &below).unwrap_err().reason,
+        Reason::InterpolationFields
+    );
 }

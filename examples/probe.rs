@@ -33,12 +33,17 @@ fn main() {
             };
             #[cfg(feature = "experimental-width-limits")]
             let limits = if args[1] == "check-widths" {
+                let width = |index: usize, default: usize| {
+                    args.get(index).map_or(Some(default), |value| {
+                        (value != "-").then(|| value.parse().expect("numeric width"))
+                    })
+                };
                 Limits {
-                    max_call_arguments: Some(4_096),
-                    max_parameters: Some(4_096),
-                    max_display_items: Some(8_192),
-                    max_slice_items: Some(4_096),
-                    max_interpolation_fields: Some(4_096),
+                    max_call_arguments: width(3, 4_096),
+                    max_parameters: width(4, 4_096),
+                    max_display_items: width(5, 8_192),
+                    max_slice_items: width(6, 4_096),
+                    max_interpolation_fields: width(7, 4_096),
                     ..limits
                 }
             } else {
@@ -58,7 +63,7 @@ fn main() {
             }
         }
         _ => panic!(
-            "expected families, generate FAMILY DEPTH SEED, check [DEPTH], or check-widths [DEPTH]"
+            "expected families, generate FAMILY DEPTH SEED, check [DEPTH], or check-widths [DEPTH [CALL PARAM DISPLAY SLICE FIELD]]"
         ),
     }
 }

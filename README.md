@@ -30,11 +30,26 @@ and checks after a rejection.
 ```rust
 use spam::{Checker, Limits};
 
-let mut checker = Checker::new(Limits::default());
+let mut checker = Checker::new(Limits::default()).expect("valid limits");
 checker.check("x = [1, 2, 3]")?;
 checker.check("y = x[0]")?;
 # Ok::<(), spam::Rejection>(())
 ```
+
+`Checker::new` validates configuration before allocating and returns `ConfigError` for a value above an implementation
+ceiling. `Limits::validate` performs the same check without constructing a checker. The one-shot `check` function reports
+`Reason::Configuration` at `0..0` for invalid settings.
+
+| Limit | Hard maximum |
+| --- | ---: |
+| Source bytes | 16 MiB |
+| Tokens | 1,000,000 |
+| Token bytes | 16 MiB |
+| Delimiter/parser depth | 1,024 |
+| Indentation depth | 1,024 |
+| Nested quoted annotations | 32 |
+| Estimated AST depth | 4,096 |
+| Each experimental construct width | 1,000,000 |
 
 The optional AST check counts long binary, attribute, call, and subscript chains that a parser may construct iteratively
 but later destroy recursively.
@@ -93,6 +108,13 @@ python3 tools/fuzz_parsers.py \
 
 With a probe built using `--features experimental-width-limits`, pass `--spam-check check-widths` to replay a campaign
 with the calibrated experimental profile.
+`tools/differential_widths.py` compares exact Spam rejection boundaries with CPython AST widths across ordinary and
+unusual valid constructs:
+
+```sh
+cargo build --release --all-features --example probe
+python3 tools/differential_widths.py --spam-probe target/release/examples/probe
+```
 
 The generator explores grammar families and writes `results.jsonl`, `summary.json`, and source files for parser failures
 and sources both parsers accept but Spam rejects.

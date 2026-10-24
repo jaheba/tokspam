@@ -46,7 +46,7 @@ fn region_fallback_matches_normal_screening() {
                         max_token_bytes: token_bytes,
                         ..Limits::default()
                     };
-                    let mut checker = Checker::new(limits);
+                    let mut checker = Checker::new(limits).expect("valid limits");
                     for _ in 0..200 {
                         let mut source = String::new();
                         for _ in 0..10 {
@@ -73,7 +73,7 @@ fn generated_regions_match_normal_screening() {
             max_ast_depth: Some(depth),
             ..Limits::default()
         };
-        let mut checker = Checker::new(limits);
+        let mut checker = Checker::new(limits).expect("valid limits");
         for family in generator::FAMILIES {
             for size in [1, 10, 80, 101, 300] {
                 let source = format!("x = 1\n{}\ny = 2\n", generator::generate(family, size, 42));
@@ -99,7 +99,8 @@ fn malformed_bytes_preserve_local_fallback_state() {
             max_nesting_depth: depth,
             max_ast_depth: Some(depth),
             ..Limits::default()
-        });
+        })
+        .expect("valid limits");
         for _ in 0..5000 {
             let mut source = String::new();
             for _ in 0..100 {
@@ -142,7 +143,7 @@ fn annotation_fallback_keeps_recursive_budgets_and_outer_ranges() {
             ..Limits::default()
         },
     ] {
-        let mut checker = Checker::new(limits);
+        let mut checker = Checker::new(limits).expect("valid limits");
         for source in &sources {
             assert_eq!(
                 checker.check_regions(source),

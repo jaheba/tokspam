@@ -599,3 +599,43 @@ Large flat template-string campaigns were also rejected on token count before re
 Keep generated campaigns bounded by the subprocess timeout and 1 MiB source cap.
 Import reproducible failures and representative conservative rejections into SQLite; add negative results and new
 hypotheses to this log so the next campaign explores different grammar paths.
+
+## Configuration-bound fuzzing
+
+After annotation scanning became iterative, every allocation-driving setting received a hard implementation ceiling.
+The source fuzz target now derives all public settings from its input, including optional token, AST, and experimental
+construct-width limits. Each value can be zero, within its supported range, disabled where applicable, or one above its
+hard ceiling. Invalid configurations must fail before scratch allocation.
+
+A 30-second libFuzzer and AddressSanitizer run on macOS arm64 completed 1,671,362 executions without a crash or sanitizer
+finding. It reached 1,115 coverage edges and 6,145 feature edges, retained about 1,600 corpus entries, and peaked at 551
+MiB RSS under ASan. Generated inputs were capped at 4 KiB by libFuzzer for this first run. Longer campaigns should seed
+valid Python and nested annotation forms so more executions reach the detailed scanner instead of configuration
+validation and UTF-8 rejection.
+
+The outer source and nested annotation scans now also share cumulative byte and token work budgets. Reinterpreting a
+quoted annotation charges its contents again, preventing configured work from being multiplied by the annotation-depth
+limit. Replaying the 2,778-file calibration corpus produced no new rejection, and the 101 retained adversarial cases kept
+their previous classifications.
+
+## Construct-width differential oracle
+
+The construct-width oracle uses CPython's AST as an independent reference. For each metric and source, it configures only
+that Spam limit, verifies acceptance at CPython's measured maximum, and verifies the matching rejection one below it.
+The first suite covers 157 boundaries across 27 sources, including unpacking, positional-only and keyword-only
+parameters, comprehensions, grouping, class bases, parenthesized imports, starred slices, adjacent strings, nested
+f-strings, format fields, and template strings when supported.
+
+The first run found 14 mismatches:
+
+- `/` and bare `*` parameter separators were counted as parameters;
+- class bases and parenthesized imports were classified as calls;
+- grouping and comprehensions were classified as displays;
+- a single subscript item was classified as a slice tuple;
+- tuple slices were also counted as displays by the calibration oracle;
+- interpolation fields accumulated across unrelated strings and across nested format levels.
+
+Spam now distinguishes those lexical roles. Adjacent string literals still accumulate interpolation fields because
+CPython folds them into one `JoinedStr`, while nested format levels and nested f-strings keep independent maxima. The
+calibration walker no longer counts a tuple used as `Subscript.slice` as a display. After these corrections, all 157
+boundaries matched CPython.

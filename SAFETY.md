@@ -41,7 +41,13 @@ The current implementation preallocates scratch and work-stack storage for every
 scanning. Its heap allocation count and sizes depend only on `Limits`; scanning does not grow those allocations.
 Oversized source is rejected before this allocation step.
 The allocation regression test covers accepted and rejected input under several configurations.
-The remaining hard ceilings and shared work budgets above are still outstanding.
+Public settings now have hard implementation ceilings. `Limits::validate` and `Checker::new` reject values above them
+before scratch allocation; the one-shot `check` API returns a configuration rejection. Optional limits remain bounded by
+the hard source and token ceilings when disabled.
+
+The outer source and every nested annotation scan share cumulative byte and token work budgets. An annotation range is
+charged again when its contents are interpreted as Python source, so configured work cannot be multiplied by annotation
+depth.
 
 The source string is owned by the caller and is not counted as Spam working memory.
 
@@ -65,4 +71,4 @@ The safety checks require:
 6. A host deadline around Spam and the downstream parser.
    The deadline remains the final availability limit if an implementation bug violates an expected complexity bound.
 
-Before release, add hard implementation ceilings and run the source-plus-configuration fuzz target.
+Before release, run the source-plus-configuration fuzz target for a sustained campaign.

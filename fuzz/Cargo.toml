@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-spam = { path = ".." }
+spam = { path = "..", features = ["experimental-width-limits"] }
 
 [[bin]]
 name = "source"

@@ -56,9 +56,9 @@ def source_metrics(tree):
         "max_slice_items": 0,
         "max_interpolation_fields": 0,
     }
-    stack = [tree]
+    stack = [(tree, None)]
     while stack:
-        node = stack.pop()
+        node, parent = stack.pop()
         metrics["ast_nodes"] += 1
         metrics["statement_count"] += isinstance(node, ast.stmt)
         if isinstance(node, ast.Name):
@@ -95,7 +95,11 @@ def source_metrics(tree):
             metrics["max_call_arguments"] = max(
                 metrics["max_call_arguments"], len(node.args) + len(node.keywords)
             )
-        elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        elif isinstance(node, (ast.List, ast.Tuple, ast.Set)) and not (
+            isinstance(node, ast.Tuple)
+            and isinstance(parent, ast.Subscript)
+            and parent.slice is node
+        ):
             metrics["max_display_items"] = max(metrics["max_display_items"], len(node.elts))
         elif isinstance(node, ast.Dict):
             metrics["max_display_items"] = max(metrics["max_display_items"], len(node.keys))
@@ -105,7 +109,7 @@ def source_metrics(tree):
             metrics["max_interpolation_fields"] = max(
                 metrics["max_interpolation_fields"], interpolation_fields(node)
             )
-        stack.extend(ast.iter_child_nodes(node))
+        stack.extend((child, node) for child in ast.iter_child_nodes(node))
 
     metrics["identifier_count"] = len(metrics.pop("identifiers"))
     return metrics

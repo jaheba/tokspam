@@ -25,6 +25,11 @@ def f(a, b, *args, c, **kwargs):
         self.assertGreater(metrics["ast_nodes"], metrics["statement_count"])
         self.assertGreater(count_tokens(source), 20)
 
+    def test_slice_tuple_is_not_also_a_display(self):
+        metrics = source_metrics(ast.parse("value = items[1:2, ..., key]"))
+        self.assertEqual(metrics["max_slice_items"], 3)
+        self.assertEqual(metrics["max_display_items"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

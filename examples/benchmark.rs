@@ -40,7 +40,7 @@ fn main() {
 
     #[cfg(feature = "experimental-regions")]
     if std::env::args().any(|arg| arg == "--regions-probe") {
-        let mut checker = Checker::new(limits.clone());
+        let mut checker = Checker::new(limits.clone()).expect("valid limits");
         let result = checker.check_regions(&source);
         assert_eq!(
             result,
@@ -62,7 +62,7 @@ fn main() {
     let ns = if std::env::args().any(|arg| arg == "--regions") {
         #[cfg(feature = "experimental-regions")]
         {
-            let mut checker = Checker::new(limits);
+            let mut checker = Checker::new(limits).expect("valid limits");
             assert_eq!(checker.check_regions(&source), result);
             bench_util::median_ns(|| {
                 let _ = black_box(checker.check_regions(black_box(&source)));
@@ -72,7 +72,7 @@ fn main() {
         panic!("rebuild with --features experimental-regions");
     } else if std::env::args().any(|arg| arg == "--guard") {
         let mut guard = byte_guard::ByteGuard::new(limits.clone());
-        let mut checker = Checker::new(limits);
+        let mut checker = Checker::new(limits).expect("valid limits");
         let proved = guard.proves_acceptance(&source);
         assert!(!proved || result.is_ok(), "invalid byte-guard proof");
         eprintln!("byte-guard: {}", if proved { "proved" } else { "fallback" });
@@ -83,7 +83,7 @@ fn main() {
             }
         })
     } else if std::env::args().any(|arg| arg == "--reuse") {
-        let mut checker = Checker::new(limits);
+        let mut checker = Checker::new(limits).expect("valid limits");
 
         bench_util::median_ns(|| {
             let _ = black_box(checker.check(black_box(&source)));

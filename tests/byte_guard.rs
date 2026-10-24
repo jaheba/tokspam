@@ -28,7 +28,7 @@ fn byte_guard_only_proves_inputs_the_checker_accepts() {
                     ..Limits::default()
                 };
                 let mut guard = ByteGuard::new(limits.clone());
-                let mut checker = Checker::new(limits);
+                let mut checker = Checker::new(limits).expect("valid limits");
 
                 for _ in 0..1000 {
                     let mut source = String::new();
@@ -59,7 +59,7 @@ fn generated_shapes_and_layout_boundaries_fall_back_safely() {
             ..Limits::default()
         };
         let mut guard = ByteGuard::new(limits.clone());
-        let mut checker = Checker::new(limits);
+        let mut checker = Checker::new(limits).expect("valid limits");
 
         for family in generator::FAMILIES {
             for size in [1, 10, 80, 101, 300] {
