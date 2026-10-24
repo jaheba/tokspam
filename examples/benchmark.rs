@@ -2,7 +2,7 @@
 #[path = "../tools/bench_util.rs"]
 mod bench_util;
 
-use spam::{Limits, check};
+use spam::{Checker, Limits, check};
 use std::{
     hint::black_box,
     io::{self, Read},
@@ -14,8 +14,16 @@ fn main() {
     let limits = Limits::default();
     let result = check(&source, &limits);
     let status = if result.is_ok() { "accept" } else { "reject" };
-    let ns = bench_util::median_ns(|| {
-        let _ = black_box(check(black_box(&source), black_box(&limits)));
-    });
+    let ns = if std::env::args().any(|arg| arg == "--reuse") {
+        let mut checker = Checker::new(limits);
+
+        bench_util::median_ns(|| {
+            let _ = black_box(checker.check(black_box(&source)));
+        })
+    } else {
+        bench_util::median_ns(|| {
+            let _ = black_box(check(black_box(&source), black_box(&limits)));
+        })
+    };
     println!("spam,{status},{},{ns:.1}", source.len());
 }

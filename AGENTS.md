@@ -15,7 +15,7 @@ not integrated into Monty yet; its existing source guard remains necessary.
 
 # Implementation and safety
 
-- `src/lib.rs` exposes `check`, `Limits`, and rejection reasons, and coordinates
+- `src/lib.rs` exposes `check`, reusable `Checker`, `Limits`, and rejection reasons, and coordinates
   annotation screening.
 - `src/lexer.rs` provides a streaming lexer that retains source ranges without
   decoding literals or collecting a token list.

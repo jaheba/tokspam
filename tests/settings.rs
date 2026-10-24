@@ -181,3 +181,41 @@ fn elif_chains_retain_ast_depth() {
     let independent = "if False: pass\nelif False: pass\n".repeat(60);
     assert!(check(&independent, &Limits::default()).is_ok());
 }
+
+#[test]
+fn checker_reuse_resets_state_after_every_rejection_kind() {
+    let limits = Limits {
+        max_source_bytes: 100,
+        max_tokens: 40,
+        max_token_bytes: Some(20),
+        max_nesting_depth: 4,
+        max_indentation_depth: 2,
+        max_ast_depth: Some(3),
+        ..Limits::default()
+    };
+    let mut checker = spam::Checker::new(limits.clone());
+    let sources = [
+        "x = 1\n",
+        "((((((1))))))",
+        "1+1+1+1+1",
+        "if x:\n if y:\n  if z:\n   pass",
+        "([)]",
+        "x: '[[[[[[int]]]]]]'",
+        "'a very long string token'",
+        "a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a",
+    ];
+
+    for source in sources.iter().cycle().take(sources.len() * 3) {
+        // Each owned source is dropped before the next check; scratch must not
+        // borrow input or retain unfinished statements after returning an error.
+        let owned = source.to_string();
+        assert_eq!(checker.check(&owned), check(&owned, &limits));
+        assert!(checker.check("x = 1\n").is_ok());
+    }
+
+    assert_eq!(
+        checker.check(&"x".repeat(101)).unwrap_err().reason,
+        Reason::SourceSize
+    );
+    assert!(checker.check("x = 1\n").is_ok());
+}

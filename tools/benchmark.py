@@ -44,6 +44,9 @@ def main():
     parser.add_argument('--spam-bench', type=Path, required=True)
     parser.add_argument('--ruff-probe', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--baseline', type=Path, help='Previous Spam benchmark binary supporting --reuse')
+    parser.add_argument('--stdlib-file', action='append', default=[],
+                        help='Additional path relative to the installed Python standard library')
     args = parser.parse_args()
     stdlib = Path(sysconfig.get_path('stdlib'))
     sources = {
@@ -53,15 +56,27 @@ def main():
         'shutil': (stdlib / 'shutil.py').read_text(),
         'chain-5000': 'x = ' + '1 + ' * 5000 + '1\n',
     }
+    for name in args.stdlib_file:
+        sources[name] = (stdlib / name).read_text()
     results = []
     for name, source in sources.items():
         spam = rust_ns(args.spam_bench.resolve(), source)
+        spam_reused = rust_ns(args.spam_bench.resolve(), source, '--reuse')
+        if spam_reused['status'] != spam['status']:
+            raise ValueError(f'{name}: checker reuse changed screening behavior')
         ruff = rust_ns(args.ruff_probe.resolve(), source, '--bench')
         cpython = cpython_ns(source)
-        results.append({'name': name, 'bytes': len(source.encode()), 'spam': spam,
-                        'ruff_ns': ruff['ns'], 'cpython_ns': cpython})
+        result = {'name': name, 'bytes': len(source.encode()), 'spam': spam, 'spam_reused': spam_reused,
+                  'ruff_ns': ruff['ns'], 'cpython_ns': cpython}
+        if args.baseline:
+            result['baseline_reused'] = rust_ns(args.baseline.resolve(), source, '--reuse')
+            if result['baseline_reused']['status'] != spam['status']:
+                raise ValueError(f'{name}: optimization changed screening behavior')
+        results.append(result)
         print(f'{name}: Spam {spam["ns"] / 1000:.1f} µs ({spam["status"]}), '
-              f'Ruff {ruff["ns"] / 1000:.1f} µs, CPython {cpython / 1000:.1f} µs')
+              f'reused {spam_reused["ns"] / 1000:.2f} µs, '
+              f'Ruff {ruff["ns"] / 1000:.1f} µs, CPython {cpython / 1000:.1f} µs, '
+              f'screen/parse {spam_reused["ns"] / ruff["ns"]:.1%}', flush=True)
     args.output.write_text(json.dumps(results, indent=2) + '\n')
 
 

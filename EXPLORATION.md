@@ -231,7 +231,106 @@ Process startup is excluded.
 | 5,000 additions, Spam rejects early | 20,006 | 3.5 µs | 459 µs | 4,526 µs |
 
 The accepted real-source example adds about 0.30 ms of Spam work before Ruff parsing on this machine.
+
+### Reusable checker and scan specialization (2026-10-24)
+
+After committing limit-based preallocation (`05b7e0e`), release measurements on macOS arm64 with Rust 1.99.0 showed
+that constructing scratch storage on every call dominated small-input cost. The committed binary measured about
+1.70 µs for `x = 1 + 2`, 660 µs for 60,000 bytes of flat assignments, and 287 µs for the installed `shutil.py`.
+
+`Checker::new(limits)` now owns scratch storage across calls. `Checker::check` resets state but allocates nothing;
+it does not retain source borrows. The parser-depth and AST-depth passes specialize on a compile-time flag, and
+inline hints on token iteration and scanner observation allow optimization within the screening loop.
+The convenience `check` still includes construction and destruction on every call.
+
+The updated `tools/benchmark.py` reports both APIs. Seven-sample medians from a run with CPython 3.15.0 and the
+existing Ruff 0.0.14 release probe were:
+
+| Input | Bytes | `check` | Reused `Checker` | Ruff | CPython |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `x = 1 + 2` | 10 | 1.7 µs | 0.10 µs | 0.5 µs | 3.9 µs |
+| 80 additions | 326 | 3.5 µs | 1.86 µs | 7.9 µs | 69.1 µs |
+| 10,000 flat assignments | 60,000 | 540 µs | 553 µs | 1,406 µs | 24,605 µs |
+| `shutil.py` | 60,689 | 244 µs | 250 µs | 413 µs | 5,126 µs |
+| 5,000 additions, rejected early | 20,006 | 3.9 µs | 2.38 µs | 456 µs | 5,155 µs |
+
+These microbenchmarks include per-call state reset and exclude process startup. Reused measurements exclude
+checker construction; the convenience measurements include it. Small differences between the two APIs on large
+inputs are within the variation seen between runs. The installed standard-library source differs from the older
+measurement above, so compare the optimization against the same-session committed binary instead.
+
+Reuse reduces tiny-input latency by about 16× relative to the committed allocation baseline. The larger accepted
+examples improve roughly 13–16%, but screening still adds about 39% of Ruff's parsing time for flat assignments
+and 61% for `shutil.py`. It is about 2–5% of CPython's `ast.parse` time on these accepted examples. This is useful
+progress, not negligible overhead before a fast Rust parser. Remaining optimization work should profile token
+classification and the two structural passes on a broader accepted-source corpus, preserving the existing checks.
+
 Rejection time depends on where the first limit is crossed; the 5,000-addition case stops near its 100th operator.
+
+### Combined scan and bounded simple-prefix path (2026-10-24)
+
+Profiling the previous reusable implementation by stage showed about 180 µs in lexing alone versus 250 µs in
+full screening for `shutil.py`. For flat assignments, lexing took about 262 µs versus 540 µs in full screening.
+These isolated stage timings identify costs; they are not additive because optimizing the combined loop changes
+inlining and code layout.
+
+The implementation now shares parser/AST structural state with independent depth totals. It preserves parser
+rejection priority and checks AST operator depth before the operator can release prefix frames. A 256-byte static
+table classifies identifier and numeric continuation bytes. Ordinary strings search for quote/backslash/newline
+candidates in a tight loop, comparing triple-quote delimiters only at quote candidates.
+
+A conservative prefix path counts tokens without constructing them for short, unindented simple lines. It excludes
+strings, delimiters, colons, continuations, semicolons, non-ASCII input, and keywords retaining cross-line state.
+Each eligible byte contributes at most one frame to either estimate; requiring the line byte count to fit both
+budgets proves that detailed depth accounting cannot reject the line. Token count and token-size checks remain
+exact. Failed attempts leave the lexer position unchanged. At the first failed line the entire remainder uses the
+detailed scanner, avoiding repeated fast-path attempts on complex modules. Every successfully skipped line leaves
+structural and annotation state equal to initial state after its newline.
+
+The following final seven-sample medians compare the previous reusable binary against these changes on the same
+macOS arm64 environment (Rust 1.99.0, CPython 3.15.0, Ruff 0.0.14). Construction is excluded from both Spam columns;
+per-input reset is included. The Ruff denominator includes parsing and AST destruction.
+
+| Input | Previous reused checker | Current reused checker | Current / Ruff |
+| --- | ---: | ---: | ---: |
+| tiny | 0.10 µs | 0.03 µs | 5.7% |
+| chain-80 | 1.91 µs | 1.67 µs | 21.1% |
+| flat-60k | 553.38 µs | 132.74 µs | 9.5% |
+| shutil | 250.47 µs | 161.12 µs | 38.4% |
+| chain-5000 | 2.36 µs | 2.06 µs | 0.5% |
+| ast.py | 109.22 µs | 65.81 µs | 37.8% |
+| dataclasses.py | 217.19 µs | 167.37 µs | 43.6% |
+| functools.py | 170.72 µs | 117.78 µs | 39.0% |
+| json/decoder.py | 54.75 µs | 30.48 µs | 36.7% |
+| re/__init__.py | 66.08 µs | 30.34 µs | 40.8% |
+
+All entries except `chain-5000` were accepted by Spam. The early-rejection result measures rejection latency,
+not accepted-input overhead. Reused checks still perform zero heap allocations.
+The convenience API, including scratch construction/destruction, measured about 1.2 µs on the tiny input.
+
+The 10% target is met for the tiny expression and flat assignments, but not for general modules. On the six tested
+standard-library modules, accepted-input overhead remains roughly 37–44% of Ruff parsing plus destruction, despite
+substantial improvement over the previous binary. Further work needs to reduce lexical work on general Python;
+combining structural bookkeeping alone cannot achieve the target when lexing dominates.
+
+Verification included the debug and release test suites, Clippy with warnings denied, and exact result comparisons
+against the committed `05b7e0e` checker on all 83 retained corpus cases, 2,051 UTF-8 standard-library files under the
+source cap (including malformed fixtures), and 195 generated cases (39 families at depths 1, 10, 80, 101, and 300).
+All outcomes, rejection reasons, and byte ranges matched. Permanent differential tests compare the combined pass
+with frozen independent-pass rules and compare the prefix path against detailed scanning across varied budgets.
+These checks preserve observed behavior; they do not establish the outstanding parser safety guarantees.
+
+To compare future changes, preserve the previous release benchmark binary before rebuilding, then run:
+
+```sh
+python3 tools/benchmark.py \
+  --spam-bench target/release/examples/benchmark \
+  --baseline /path/to/previous/benchmark \
+  --ruff-probe tools/ruff-probe/target/release/spam-ruff-probe \
+  --stdlib-file ast.py --stdlib-file dataclasses.py --stdlib-file functools.py \
+  --stdlib-file json/decoder.py --stdlib-file re/__init__.py \
+  --output /tmp/spam-performance.json
+```
 
 ## Runtime-generated source
 

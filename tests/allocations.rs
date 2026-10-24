@@ -1,7 +1,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use spam::{Limits, check};
+use spam::{Checker, Limits, Rejection, check};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Allocations {
@@ -49,9 +49,9 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-fn allocations(source: &str, limits: &Limits) -> Allocations {
+fn allocations(run: impl FnOnce() -> Result<(), Rejection>) -> Allocations {
     COUNTS.with(|counts| counts.set(Some(Allocations::default())));
-    let result = check(source, limits);
+    let result = run();
     let counts = COUNTS.with(|counts| counts.replace(None).unwrap());
     std::hint::black_box(result).ok();
     counts
@@ -102,11 +102,28 @@ fn source_cannot_change_allocation_count_or_size() {
             ..Limits::default()
         },
     ] {
-        let expected = allocations("", &limits);
+        let expected = allocations(|| check("", &limits));
         assert_eq!(expected.reallocations, 0);
 
         for source in &sources {
-            assert_eq!(allocations(source, &limits), expected, "{source:?}");
+            assert_eq!(
+                allocations(|| check(source, &limits)),
+                expected,
+                "{source:?}"
+            );
+        }
+
+        let mut checker = Checker::new(limits.clone());
+
+        // Include the first call and reuse after failures: neither may allocate
+        // or retain lexer/scanner state from an earlier source.
+        for source in sources.iter().cycle().take(sources.len() * 3) {
+            assert_eq!(
+                allocations(|| checker.check(source)),
+                Allocations::default(),
+                "{source:?}",
+            );
+            assert_eq!(checker.check(source), check(source, &limits));
         }
     }
 }

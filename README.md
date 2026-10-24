@@ -23,9 +23,26 @@ check("x = [1, 2, 3]", &limits)?;
 `Limits` also controls token count, indentation depth, scanning quoted annotations, and the maximum number of nested
 annotations.
 `check` returns a reason and a byte range for rejected input.
+For repeated use, create a `Checker` once per worker.
+Construction allocates scratch storage; every subsequent check performs zero heap allocations, including the first check
+and checks after a rejection.
+
+```rust
+use spam::{Checker, Limits};
+
+let mut checker = Checker::new(Limits::default());
+checker.check("x = [1, 2, 3]")?;
+checker.check("y = x[0]")?;
+# Ok::<(), spam::Rejection>(())
+```
+
 The optional AST check counts long binary, attribute, call, and subscript chains that a parser may construct iteratively
 but later destroy recursively.
 Its depth estimate is conservative.
+
+A shared structural pass maintains separate parser and AST depth estimates. A conservative fast path scans a prefix
+of short, unindented simple lines without constructing tokens. It counts tokens exactly and uses line byte length as
+a depth upper bound; complex syntax or insufficient budgets falls back to detailed scanning.
 
 The lexer handles comments, strings, f-strings, template strings, indentation, and explicit line continuations.
 It retains bounded stacks and scans without storing a token list.
@@ -73,7 +90,8 @@ Import keeps the shortest source per family and observed outcome within each cam
 records results from every available implementation.
 Run `python3 tools/case_db.py list` to inspect retained cases.
 
-See [the exploration log](EXPLORATION.md) for tested shapes, negative results, run conditions, and next experiments.
+See the [parser attack plan](ATTACK_PLAN.md) for campaign budgets, attack families, and success criteria.
+The [exploration log](EXPLORATION.md) records tested shapes, negative results, run conditions, and next experiments.
 Run `python3 tools/scan_stdlib.py --spam-probe target/debug/examples/probe --ruff-probe
 tools/ruff-probe/target/debug/spam-ruff-probe --output /tmp/spam-stdlib` under the Python version you want to sample.
 It reports valid standard-library files that Spam rejects and checks those files with Ruff.
@@ -135,5 +153,11 @@ python3 tools/benchmark.py \
 The benchmark reports seven-sample medians for in-process Spam checking, Ruff parsing plus AST destruction, and CPython
 `ast.parse`.
 It excludes process startup.
+The report includes both `check` (scratch construction and destruction on every call) and a reused `Checker`
+(construction excluded, state reset included).
 Spam screens rather than builds an AST, so the times show added preflight cost, not equivalent parsing work.
+Pass `--baseline /path/to/previous/benchmark` to compare against an earlier binary supporting `--reuse`.
+Use repeated `--stdlib-file` options, such as `--stdlib-file dataclasses.py`, to add representative installed modules.
+The report includes screening time as a fraction of Ruff parsing time; early rejections should be assessed separately
+from accepted-input overhead.
 The measured results and machine details are in [the exploration log](EXPLORATION.md#performance).

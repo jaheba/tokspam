@@ -1,6 +1,30 @@
 //! Streaming byte lexer. It preserves source ranges and never decodes literals.
 use std::ops::Range;
 
+const NAME_BYTE: u8 = 1;
+const NUMBER_BYTE: u8 = 2;
+
+// One lookup classifies continuation bytes in the hot identifier/number loops.
+// Non-ASCII bytes are kept together as names, matching the streaming lexer.
+const BYTE_CLASSES: [u8; 256] = {
+    let mut classes = [0; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        let ascii_word = (byte >= b'a' as usize && byte <= b'z' as usize)
+            || (byte >= b'A' as usize && byte <= b'Z' as usize)
+            || (byte >= b'0' as usize && byte <= b'9' as usize)
+            || byte == b'_' as usize;
+        if ascii_word || byte >= 128 {
+            classes[byte] |= NAME_BYTE;
+        }
+        if ascii_word || byte == b'.' as usize {
+            classes[byte] |= NUMBER_BYTE;
+        }
+        byte += 1;
+    }
+    classes
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Name,
@@ -78,11 +102,25 @@ enum Context {
     Format,
 }
 
-pub struct Lexer<'a> {
-    source: &'a str,
-    position: usize,
+pub(super) struct LexerScratch {
     contexts: Vec<Context>,
     indents: Vec<usize>,
+}
+
+impl LexerScratch {
+    pub(super) fn new(limit: usize, indentation_limit: usize) -> Self {
+        Self {
+            contexts: Vec::with_capacity(limit + 1),
+            indents: Vec::with_capacity(indentation_limit + 1),
+        }
+    }
+}
+
+pub struct Lexer<'a, 's> {
+    source: &'a str,
+    position: usize,
+    contexts: &'s mut Vec<Context>,
+    indents: &'s mut Vec<usize>,
     line_start: bool,
     pending_indent: Option<usize>,
     limit: usize,
@@ -90,34 +128,127 @@ pub struct Lexer<'a> {
     stopped: bool,
 }
 
-impl<'a> Lexer<'a> {
-    pub fn new(source: &'a str, limit: usize, indentation_limit: usize) -> Self {
-        let mut lexer = Self {
+impl<'a, 's> Lexer<'a, 's> {
+    pub fn new(
+        source: &'a str,
+        limit: usize,
+        indentation_limit: usize,
+        scratch: &'s mut LexerScratch,
+    ) -> Self {
+        scratch.contexts.clear();
+        scratch.contexts.push(Context::Root);
+        scratch.indents.clear();
+        scratch.indents.push(0);
+
+        Self {
             source,
             position: 0,
-            contexts: Vec::with_capacity(limit + 1),
-            indents: Vec::with_capacity(indentation_limit + 1),
+            contexts: &mut scratch.contexts,
+            indents: &mut scratch.indents,
             line_start: true,
             pending_indent: None,
             limit,
             indentation_limit,
             stopped: false,
-        };
-        lexer.reset(source, limit);
-        lexer
+        }
     }
 
-    pub(super) fn reset(&mut self, source: &'a str, limit: usize) {
-        self.source = source;
-        self.position = 0;
-        self.contexts.clear();
-        self.contexts.push(Context::Root);
-        self.indents.clear();
-        self.indents.push(0);
-        self.line_start = true;
-        self.pending_indent = None;
-        self.limit = limit;
-        self.stopped = false;
+    // Only an unindented prefix of standalone ASCII lines qualifies. Strings,
+    // delimiters, annotations and continuations use the detailed lexer instead.
+    // This routine commits its position only after every bound has passed.
+    pub(super) fn skip_simple_line(
+        &mut self,
+        max_bytes: usize,
+        max_tokens: usize,
+        max_token_bytes: Option<usize>,
+    ) -> Option<usize> {
+        let bytes = self.source.as_bytes();
+        let mut position = self.position;
+        let mut column = 0;
+        while let Some(byte) = bytes.get(position) {
+            match byte {
+                b' ' => column += 1,
+                b'\t' => column = (column / 8 + 1) * 8,
+                0x0c => column = 0,
+                _ => break,
+            }
+            position += 1;
+        }
+        if column != 0 {
+            return None;
+        }
+
+        let start = position;
+        let mut tokens = 0;
+        loop {
+            if position - start > max_bytes {
+                return None;
+            }
+            let token_start = position;
+            let byte = *bytes.get(position)?;
+            position += 1;
+            let newline = match byte {
+                b' ' | b'\t' | 0x0c => continue,
+                b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                    while bytes
+                        .get(position)
+                        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                    {
+                        position += 1;
+                    }
+                    // These keywords either retain cross-line state or add
+                    // multiple frames, invalidating the simple byte bound.
+                    if matches!(&bytes[token_start..position], b"lambda" | b"elif" | b"else") {
+                        return None;
+                    }
+                    false
+                }
+                b'0'..=b'9' => {
+                    while bytes
+                        .get(position)
+                        .is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.'))
+                    {
+                        position += 1;
+                    }
+                    false
+                }
+                b'*' | b'/' | b'<' | b'>' | b'=' | b'!' => {
+                    if matches!(
+                        (byte, bytes.get(position)),
+                        (b'*', Some(b'*'))
+                            | (b'/', Some(b'/'))
+                            | (b'<', Some(b'<' | b'='))
+                            | (b'>', Some(b'>' | b'='))
+                            | (b'=', Some(b'='))
+                            | (b'!', Some(b'='))
+                    ) {
+                        position += 1;
+                    }
+                    false
+                }
+                b'+' | b'-' | b'~' | b'%' | b'@' | b'|' | b'&' | b'^' | b'.' | b',' => false,
+                b'\n' | b'\r' => {
+                    if byte == b'\r' && bytes.get(position) == Some(&b'\n') {
+                        position += 1;
+                    }
+                    true
+                }
+                _ => return None,
+            };
+            tokens += 1;
+            if tokens > max_tokens
+                || max_token_bytes.is_some_and(|limit| position - token_start > limit)
+            {
+                return None;
+            }
+            if newline {
+                if tokens == 1 {
+                    return None;
+                }
+                self.position = position;
+                return Some(tokens);
+            }
+        }
     }
 
     fn token(&self, kind: Kind, start: usize) -> Token {
@@ -162,8 +293,24 @@ impl<'a> Lexer<'a> {
 
         let inner = self.position;
         while self.position < bytes.len() {
+            // Search literal text in a tight byte loop; only quote candidates
+            // need the more expensive triple-quote delimiter comparison.
+            let text = &bytes[self.position..];
+            let special = if width == 1 {
+                text.iter()
+                    .position(|&byte| byte == quote || matches!(byte, b'\\' | b'\n' | b'\r'))
+            } else {
+                text.iter().position(|&byte| byte == quote || byte == b'\\')
+            };
+            let Some(offset) = special else {
+                self.position = bytes.len();
+                break;
+            };
+            self.position += offset;
             let byte = bytes[self.position];
-            if bytes.get(self.position..self.position + width) == Some(&[quote; 3][..width]) {
+            if byte == quote
+                && (width == 1 || bytes.get(self.position..self.position + 3) == Some(&[quote; 3]))
+            {
                 let end = self.position;
                 self.position += width;
                 let mut token = self.token(Kind::String, start);
@@ -231,9 +378,10 @@ impl<'a> Lexer<'a> {
     }
 }
 
-impl Iterator for Lexer<'_> {
+impl Iterator for Lexer<'_, '_> {
     type Item = Token;
 
+    #[inline(always)]
     fn next(&mut self) -> Option<Token> {
         if self.stopped {
             return None;
@@ -335,9 +483,7 @@ impl Iterator for Lexer<'_> {
                 b'\'' | b'"' => return Some(self.quoted(start, start)),
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' | 0x80..=0xff => {
                     while self.position < bytes.len()
-                        && (bytes[self.position].is_ascii_alphanumeric()
-                            || bytes[self.position] == b'_'
-                            || bytes[self.position] >= 0x80)
+                        && (BYTE_CLASSES[bytes[self.position] as usize] & NAME_BYTE != 0)
                     {
                         self.position += 1;
                     }
@@ -370,8 +516,7 @@ impl Iterator for Lexer<'_> {
                 }
                 b'0'..=b'9' => {
                     while self.position < bytes.len()
-                        && (bytes[self.position].is_ascii_alphanumeric()
-                            || matches!(bytes[self.position], b'_' | b'.'))
+                        && (BYTE_CLASSES[bytes[self.position] as usize] & NUMBER_BYTE != 0)
                     {
                         self.position += 1;
                     }

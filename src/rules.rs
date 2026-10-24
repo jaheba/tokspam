@@ -1,11 +1,15 @@
 //! Recursion rules adapted from Monty's existing source-nesting guard.
+use super::Reason;
 use super::lexer::Kind;
 
 /// Estimates parser frames from lexical structure.
 /// Brackets, operators, bodies, format specs and blocks consume depth.
 /// Coverage of malformed input remains experimental.
+/// Parser and AST estimates share structural state and keep separate totals.
 pub(super) struct Scanner {
     limit: u32,
+    ast_limit: Option<u32>,
+    pub(super) ast_total: u32,
     /// Open bracket levels, bottom entry being the module or expression itself.
     levels: Vec<Level>,
     /// Open indented blocks.
@@ -20,7 +24,6 @@ pub(super) struct Scanner {
     elif_runs: Vec<u32>,
     /// Open levels (excluding the bottom), indentation and every level's counts.
     pub(super) total: u32,
-    ast: bool,
 }
 
 /// Frames open at one bracket level.
@@ -39,6 +42,7 @@ struct Level {
     binary_stack: [(u8, u32); 6],
     binary_len: usize,
     binary_depth: u32,
+    ast_loose: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -55,25 +59,28 @@ enum LevelKind {
 }
 
 impl Scanner {
-    pub(super) fn new(limit: u32, ast: bool) -> Self {
+    pub(super) fn new(limit: u32, ast_limit: Option<u32>) -> Self {
         // Include the root and one overflowing entry: observe reports the
         // rejection after pushing the token that exceeds the budget.
         let mut scanner = Self {
             limit,
+            ast_limit,
+            ast_total: 0,
             levels: Vec::with_capacity(limit as usize + 2),
             indent: 0,
             prev_ends_operand: false,
             statement_start: true,
             elif_runs: Vec::with_capacity(limit as usize + 2),
             total: 0,
-            ast,
         };
-        scanner.reset(limit);
+        scanner.reset(limit, ast_limit);
         scanner
     }
 
-    pub(super) fn reset(&mut self, limit: u32) {
+    pub(super) fn reset(&mut self, limit: u32, ast_limit: Option<u32>) {
         self.limit = limit;
+        self.ast_limit = ast_limit;
+        self.ast_total = 0;
         self.levels.clear();
         self.levels.push(Level::new(LevelKind::Top));
         self.elif_runs.clear();
@@ -84,30 +91,27 @@ impl Scanner {
         self.total = 0;
     }
 
-    /// Accounts for one token, returning whether the estimate now exceeds the limit.
-    pub(super) fn observe(&mut self, kind: Kind) -> bool {
-        if self.observe_statement_start(kind) {
-            return true;
-        }
-        // A call or subscript keeps its left operand in the resulting AST after
-        // the closing delimiter releases the parser frame.
-        if self.ast
-            && self.prev_ends_operand
-            && matches!(kind, Kind::Lpar | Kind::Lsqb)
-            && self.add_loose(1)
-        {
-            return true;
-        }
-        if self.ast && self.prev_ends_operand {
-            if kind == Kind::Dot && self.add_loose(1) {
-                return true;
-            }
-            if let Some(precedence) = binary_precedence(kind) {
-                if self.observe_binary(precedence) {
-                    return true;
+    /// Updates both estimates, preserving parser rejection priority on a token.
+    #[inline]
+    pub(super) fn observe(&mut self, kind: Kind) -> Option<Reason> {
+        if self.ast_limit.is_some() {
+            self.observe_statement_start(kind);
+
+            // Calls, subscripts and attributes retain their left operand in the
+            // AST after the corresponding parser frame has returned.
+            if self.prev_ends_operand {
+                if matches!(kind, Kind::Lpar | Kind::Lsqb | Kind::Dot) {
+                    self.top().ast_loose += 1;
+                    self.ast_total += 1;
+                }
+                if let Some(precedence) = binary_precedence(kind) {
+                    self.observe_binary(precedence);
                 }
             }
         }
+        // AST operators are checked before the token releases prefix frames.
+        // A later reset must not hide a transient violation from the old pass.
+        let ast_exceeded = self.ast_exceeded();
         let exceeded = match kind {
             Kind::Lpar | Kind::Lsqb => self.push(LevelKind::Bracket),
             Kind::Lbrace => {
@@ -134,7 +138,8 @@ impl Scanner {
             Kind::Dedent => {
                 if self.indent > 0 {
                     self.indent -= 1;
-                    self.total -= 1 + self.elif_runs.pop().unwrap_or(0);
+                    self.total -= 1;
+                    self.ast_total -= 1 + self.elif_runs.pop().unwrap_or(0);
                 }
                 false
             }
@@ -211,27 +216,33 @@ impl Scanner {
             kind,
             Kind::Newline | Kind::Semi | Kind::Indent | Kind::Dedent
         );
-        exceeded
+        if exceeded {
+            Some(Reason::Nesting)
+        } else if ast_exceeded || self.ast_exceeded() {
+            Some(Reason::AstDepth)
+        } else {
+            None
+        }
     }
 
-    fn observe_statement_start(&mut self, kind: Kind) -> bool {
-        if !self.ast || !self.statement_start {
-            return false;
+    fn observe_statement_start(&mut self, kind: Kind) {
+        if !self.statement_start {
+            return;
         }
         if kind == Kind::Elif {
             *self.elif_runs.last_mut().unwrap() += 1;
-            return self.add(1);
+            self.ast_total += 1;
+            return;
         }
         if matches!(
             kind,
             Kind::Newline | Kind::Semi | Kind::Indent | Kind::Dedent | Kind::Else
         ) {
-            return false;
+            return;
         }
         let run = self.elif_runs.last_mut().unwrap();
-        self.total -= *run;
+        self.ast_total -= *run;
         *run = 0;
-        false
     }
 
     /// A lambda's `:` opens its body; any other colon ends the expression
@@ -268,7 +279,9 @@ impl Scanner {
     fn pop(&mut self) {
         if self.levels.len() > 1 {
             let level = self.levels.pop().expect("length checked above");
-            self.total -= 1 + level.tight + level.loose + level.binary_depth;
+            let shared = 1 + level.tight + level.loose;
+            self.total -= shared;
+            self.ast_total -= shared + level.ast_loose + level.binary_depth;
         }
     }
 
@@ -287,19 +300,23 @@ impl Scanner {
         let released = top.tight;
         top.tight = 0;
         self.total -= released;
+        self.ast_total -= released;
     }
 
     fn reset_level(&mut self) {
         let top = self.top();
-        let released = top.tight + top.loose + top.binary_depth;
+        let released = top.tight + top.loose;
+        let ast_released = released + top.ast_loose + top.binary_depth;
         top.tight = 0;
         top.loose = 0;
         top.binary_depth = 0;
         top.binary_len = 0;
+        top.ast_loose = 0;
         self.total -= released;
+        self.ast_total -= ast_released;
     }
 
-    fn observe_binary(&mut self, precedence: u8) -> bool {
+    fn observe_binary(&mut self, precedence: u8) {
         let level = self.top();
         let mut current = 0;
         while level.binary_stack[..level.binary_len]
@@ -318,16 +335,16 @@ impl Scanner {
             .fold(0u32, |right, (_, left)| left.max(&right) + 1);
         let old_depth = level.binary_depth;
         level.binary_depth = depth;
-        if depth >= old_depth {
-            self.add(depth - old_depth)
-        } else {
-            self.total -= old_depth - depth;
-            false
-        }
+        self.ast_total = self.ast_total - old_depth + depth;
+    }
+
+    fn ast_exceeded(&self) -> bool {
+        self.ast_limit.is_some_and(|limit| self.ast_total > limit)
     }
 
     fn add(&mut self, frames: u32) -> bool {
         self.total += frames;
+        self.ast_total += frames;
         self.total > self.limit
     }
 }
@@ -342,6 +359,7 @@ impl Level {
             binary_stack: [(0, 0); 6],
             binary_len: 0,
             binary_depth: 0,
+            ast_loose: 0,
         }
     }
 }
@@ -355,5 +373,70 @@ fn binary_precedence(kind: Kind) -> Option<u8> {
         Kind::Plus | Kind::Minus => Some(5),
         Kind::Star | Kind::At | Kind::Slash | Kind::DoubleSlash | Kind::Percent => Some(6),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/support/reference_rules.rs"]
+mod reference;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::{Lexer, LexerScratch};
+
+    #[test]
+    fn combined_pass_matches_independent_passes() {
+        let alphabet = [
+            "x", "1", "(", ")", "[", "]", "{", "}", "f'", "'", ":", ",", ";", "\n", " ", "+", "-",
+            "*", "**", "~", "lambda", "else", "elif", "if", "await", ".", "|", "^", "&", "<<", "/",
+            "=", "not", "for",
+        ];
+        let mut random = 42u64;
+
+        for parser_limit in [0, 1, 3, 10, 30] {
+            for ast_limit in [None, Some(0), Some(1), Some(5), Some(30)] {
+                let mut combined = Scanner::new(parser_limit, ast_limit);
+                let mut parser = reference::Scanner::<false>::new(parser_limit);
+                let mut ast = ast_limit.map(reference::Scanner::<true>::new);
+                let mut scratch = LexerScratch::new(30, 30);
+
+                for _ in 0..500 {
+                    let mut source = String::new();
+                    for _ in 0..100 {
+                        random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        source.push_str(alphabet[(random >> 32) as usize % alphabet.len()]);
+                    }
+                    combined.reset(parser_limit, ast_limit);
+                    parser.reset(parser_limit);
+                    if let Some(ast) = &mut ast {
+                        ast.reset(ast_limit.unwrap());
+                    }
+
+                    for token in Lexer::new(&source, 30, 30, &mut scratch) {
+                        let expected = if parser.observe(token.kind) {
+                            Some(Reason::Nesting)
+                        } else if ast.as_mut().is_some_and(|ast| ast.observe(token.kind)) {
+                            Some(Reason::AstDepth)
+                        } else {
+                            None
+                        };
+                        assert_eq!(
+                            combined.observe(token.kind),
+                            expected,
+                            "{source:?}: {:?}",
+                            token.kind
+                        );
+                        if expected.is_some() {
+                            break;
+                        }
+                        assert_eq!(combined.total, parser.total);
+                        if let Some(ast) = &ast {
+                            assert_eq!(combined.ast_total, ast.total);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

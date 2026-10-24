@@ -9,7 +9,7 @@
 mod lexer;
 mod rules;
 
-use lexer::{Kind, Lexer};
+use lexer::{Kind, Lexer, LexerScratch};
 use rules::Scanner;
 use std::ops::Range;
 
@@ -76,6 +76,7 @@ impl Default for Limits {
 /// Successful screening does not validate Python syntax.
 /// Scratch allocations depend only on `limits` and finish before token scanning.
 /// Oversized source is rejected before allocating scratch memory.
+/// Use [`Checker`] to amortize scratch allocation across multiple inputs.
 pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
     if source.len() > limits.max_source_bytes {
         return Err(Rejection {
@@ -84,49 +85,70 @@ pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
         });
     }
 
-    let annotation_depth = if limits.check_string_annotations {
-        limits.max_annotation_depth
-    } else {
-        0
-    };
-    let mut scratch: Vec<_> = (0..=annotation_depth)
-        .map(|_| ScanScratch::new(limits))
-        .collect();
+    Checker::new(limits.clone()).check(source)
+}
 
-    scan(
-        source,
-        limits,
-        u32::from(limits.max_nesting_depth),
-        limits.max_ast_depth.map(u32::from),
-        0,
-        false,
-        &mut scratch,
-    )
+/// Reusable screening state. Construction allocates scratch storage from the
+/// configured limits; subsequent checks perform no heap allocations.
+///
+/// Use one checker per worker when screening many inputs before parsing them.
+/// Source strings are borrowed only for the duration of each check.
+pub struct Checker {
+    limits: Limits,
+    scratch: Vec<ScanScratch>,
+}
+
+impl Checker {
+    pub fn new(limits: Limits) -> Self {
+        let annotation_depth = if limits.check_string_annotations {
+            limits.max_annotation_depth
+        } else {
+            0
+        };
+        let scratch = (0..=annotation_depth)
+            .map(|_| ScanScratch::new(&limits))
+            .collect();
+
+        Self { limits, scratch }
+    }
+
+    /// Rejects source that exceeds the configured structural budgets.
+    /// Successful screening does not validate Python syntax.
+    pub fn check(&mut self, source: &str) -> Result<(), Rejection> {
+        if source.len() > self.limits.max_source_bytes {
+            return Err(Rejection {
+                reason: Reason::SourceSize,
+                range: 0..source.len(),
+            });
+        }
+
+        scan::<true>(
+            source,
+            &self.limits,
+            u32::from(self.limits.max_nesting_depth),
+            self.limits.max_ast_depth.map(u32::from),
+            0,
+            false,
+            &mut self.scratch,
+        )
+    }
 }
 
 // Allocate every annotation frame before inspecting tokens. Reusing these frames
 // keeps both allocation count and capacity independent of the source structure.
-struct ScanScratch<'a> {
-    lexer: Lexer<'a>,
+struct ScanScratch {
+    lexer: LexerScratch,
     scanner: Scanner,
-    ast: Option<Scanner>,
     annotations: AnnotationTracker,
 }
 
-impl ScanScratch<'_> {
+impl ScanScratch {
     fn new(limits: &Limits) -> Self {
         let budget = u32::from(limits.max_nesting_depth);
 
         Self {
-            lexer: Lexer::new(
-                "",
-                budget as usize,
-                usize::from(limits.max_indentation_depth),
-            ),
-            scanner: Scanner::new(budget, false),
-            ast: limits
-                .max_ast_depth
-                .map(|budget| Scanner::new(u32::from(budget), true)),
+            lexer: LexerScratch::new(budget as usize, usize::from(limits.max_indentation_depth)),
+            scanner: Scanner::new(budget, limits.max_ast_depth.map(u32::from)),
             annotations: AnnotationTracker {
                 brackets: Vec::with_capacity(budget as usize),
                 ..AnnotationTracker::default()
@@ -135,32 +157,52 @@ impl ScanScratch<'_> {
     }
 }
 
-fn scan<'a>(
-    source: &'a str,
+fn scan<const FAST: bool>(
+    source: &str,
     limits: &Limits,
     budget: u32,
     ast_budget: Option<u32>,
     string_depth: u8,
     annotation_source: bool,
-    scratch: &mut [ScanScratch<'a>],
+    scratch: &mut [ScanScratch],
 ) -> Result<(), Rejection> {
     let (frame, remaining_scratch) = scratch.split_first_mut().expect("annotation depth checked");
     let ScanScratch {
         lexer,
         scanner,
-        ast,
         annotations,
     } = frame;
 
-    lexer.reset(source, budget as usize);
-    scanner.reset(budget);
-    if let Some(ast) = ast {
-        ast.reset(ast_budget.expect("AST budget matches scratch"));
-    }
+    let mut lexer = Lexer::new(
+        source,
+        budget as usize,
+        usize::from(limits.max_indentation_depth),
+        lexer,
+    );
+    scanner.reset(budget, ast_budget);
     annotations.reset();
 
     let mut token_count = 0;
-    for token in lexer.by_ref() {
+    // Scan a simple prefix without constructing tokens. At the first complex
+    // line, use the detailed scanner for the remainder to avoid rescanning
+    // every statement in normal modules with strings and compound syntax.
+    // Without delimiters or cross-line keywords, each byte contributes at
+    // most one frame to either estimate. This upper bound only accepts lines;
+    // anything outside it falls back to the exact counters and error ranges.
+    let simple_budget = budget.min(ast_budget.unwrap_or(budget)) as usize;
+    if FAST {
+        while let Some(count) = lexer.skip_simple_line(
+            simple_budget,
+            limits.max_tokens.saturating_sub(token_count),
+            limits.max_token_bytes,
+        ) {
+            token_count += count;
+            // Every qualifying line ends with all structural and annotation
+            // state reset, so only the token count carries to detailed scanning.
+        }
+    }
+
+    for token in lexer {
         token_count += 1;
         if token_count > limits.max_tokens {
             return Err(Rejection {
@@ -194,14 +236,12 @@ fn scan<'a>(
                 // Raw contents avoid allocating decoded strings. Escaped annotations
                 // need separate rules before this can model their parsed depth.
                 let remaining = budget.saturating_sub(scanner.total);
-                let ast_remaining = ast
-                    .as_ref()
-                    .zip(ast_budget)
-                    .map(|(scanner, budget)| budget.saturating_sub(scanner.total));
+                let ast_remaining =
+                    ast_budget.map(|budget| budget.saturating_sub(scanner.ast_total));
                 let minimum = remaining.min(ast_remaining.unwrap_or(remaining));
                 if contents.len() > minimum as usize
                     && (string_depth >= limits.max_annotation_depth
-                        || scan(
+                        || scan::<FAST>(
                             &source[contents],
                             limits,
                             remaining,
@@ -219,18 +259,9 @@ fn scan<'a>(
                 }
             }
         }
-        if scanner.observe(token.kind) {
+        if let Some(reason) = scanner.observe(token.kind) {
             return Err(Rejection {
-                reason: Reason::Nesting,
-                range: token.range,
-            });
-        }
-        if ast
-            .as_mut()
-            .is_some_and(|scanner| scanner.observe(token.kind))
-        {
-            return Err(Rejection {
-                reason: Reason::AstDepth,
+                reason,
                 range: token.range,
             });
         }
@@ -403,7 +434,8 @@ mod tests {
             "f'{",
             "([)]",
         ] {
-            for token in Lexer::new(source, 30, 30) {
+            let mut scratch = LexerScratch::new(30, 30);
+            for token in Lexer::new(source, 30, 30, &mut scratch) {
                 assert!(source.is_char_boundary(token.range.start));
                 assert!(source.is_char_boundary(token.range.end));
             }
@@ -425,7 +457,8 @@ mod tests {
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 source.push(alphabet[(state >> 32) as usize % alphabet.len()]);
             }
-            let tokens: Vec<_> = Lexer::new(&source, 30, 30)
+            let mut scratch = LexerScratch::new(30, 30);
+            let tokens: Vec<_> = Lexer::new(&source, 30, 30, &mut scratch)
                 .take(source.len() * 2 + 32)
                 .collect();
             assert!(tokens.len() < source.len() * 2 + 32);
@@ -442,5 +475,73 @@ mod tests {
         assert!(check(&"x = [-1, -2]\n".repeat(100)).is_ok());
         assert!(check(&format!("x = [{}]", "-1, ".repeat(3000))).is_ok());
         assert!(check(&format!("x = {{{}}}", "'k': lambda a, b: 0, ".repeat(500))).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn simple_prefix_matches_detailed_scanning() {
+        let lines = [
+            "x = 1\n",
+            "value = left.attr + right * 2\r\n",
+            "x = ~~--1 ** 2\n",
+            "x != y <= z >> 2 // 3\n",
+            "async await yield not in is and or if for\n",
+            "case, x, 1.2e3, 0xdead\n",
+            "else x\n",
+            "elif x\n",
+            "lambda x\n",
+            "x = '\n",
+            "x: '[[[[int]]]]'\n",
+            "x = f'{y:{z}}'\n",
+            "(x\n + y)\n",
+            "x = 1 + \\\n2\n",
+            "π = '🦀'\n",
+            "\t\x0cx = 1\n",
+            "if x:\n pass\n",
+            "# comment\n",
+            "x = 1\r",
+            "x = 1",
+            "",
+        ];
+        let mut random = 123u64;
+
+        for depth in [0, 1, 4, 30, 100] {
+            for tokens in [0, 1, 4, 20, 1000] {
+                for token_bytes in [None, Some(0), Some(1), Some(8)] {
+                    let limits = Limits {
+                        max_nesting_depth: depth,
+                        max_ast_depth: Some(depth / 2),
+                        max_tokens: tokens,
+                        max_token_bytes: token_bytes,
+                        max_annotation_depth: 3,
+                        ..Limits::default()
+                    };
+                    let mut checker = Checker::new(limits.clone());
+
+                    for _ in 0..100 {
+                        let mut source = String::new();
+                        for _ in 0..10 {
+                            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                            source.push_str(lines[(random >> 32) as usize % lines.len()]);
+                        }
+                        let actual = checker.check(&source);
+                        let expected = scan::<false>(
+                            &source,
+                            &limits,
+                            u32::from(depth),
+                            limits.max_ast_depth.map(u32::from),
+                            0,
+                            false,
+                            &mut checker.scratch,
+                        );
+                        assert_eq!(actual, expected, "{source:?}");
+                    }
+                }
+            }
+        }
     }
 }
