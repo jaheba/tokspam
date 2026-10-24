@@ -1,0 +1,72 @@
+[
+  {
+    "name": "tiny",
+    "bytes": 10,
+    "spam": {
+      "ns": 1752.6,
+      "status": "accept"
+    },
+    "spam_reused": {
+      "ns": 34.9,
+      "status": "accept"
+    },
+    "ruff_ns": 539.8,
+    "cpython_ns": 3749.29296875
+  },
+  {
+    "name": "chain-80",
+    "bytes": 326,
+    "spam": {
+      "ns": 4606.5,
+      "status": "accept"
+    },
+    "spam_reused": {
+      "ns": 2971.2,
+      "status": "accept"
+    },
+    "ruff_ns": 7967.9,
+    "cpython_ns": 69235.02734375
+  },
+  {
+    "name": "flat-60k",
+    "bytes": 60000,
+    "spam": {
+      "ns": 135625.5,
+      "status": "accept"
+    },
+    "spam_reused": {
+      "ns": 135460.4,
+      "status": "accept"
+    },
+    "ruff_ns": 1401722.7,
+    "cpython_ns": 23839854.5
+  },
+  {
+    "name": "shutil",
+    "bytes": 60689,
+    "spam": {
+      "ns": 230756.5,
+      "status": "accept"
+    },
+    "spam_reused": {
+      "ns": 226623.4,
+      "status": "accept"
+    },
+    "ruff_ns": 419892.9,
+    "cpython_ns": 5426015.625
+  },
+  {
+    "name": "chain-5000",
+    "bytes": 20006,
+    "spam": {
+      "ns": 5276.4,
+      "status": "reject"
+    },
+    "spam_reused": {
+      "ns": 4324.0,
+      "status": "reject"
+    },
+    "ruff_ns": 452134.4,
+    "cpython_ns": 5209145.75
+  }
+]

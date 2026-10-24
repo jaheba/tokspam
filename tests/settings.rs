@@ -311,6 +311,22 @@ fn case_can_be_a_variable() {
 }
 
 #[test]
+fn complex_literal_patterns_count_parser_recursion() {
+    let limits = Limits {
+        max_ast_depth: None,
+        ..Limits::default()
+    };
+    let pattern = format!("match x:\n    case {}1j:\n        pass\n", "1+".repeat(101));
+    assert_eq!(
+        check(&pattern, &limits).unwrap_err().reason,
+        Reason::Nesting
+    );
+
+    let variable = format!("case{}\n", " + 1".repeat(101));
+    assert!(check(&variable, &limits).is_ok());
+}
+
+#[test]
 fn mixed_operator_precedence_does_not_accumulate_sibling_depth() {
     let source = format!("x = {}1", "1 + 1 * ".repeat(51));
     assert!(check(&source, &Limits::default()).is_ok());
@@ -371,7 +387,6 @@ fn checker_reuse_resets_state_after_every_rejection_kind() {
     assert!(checker.check("x = 1\n").is_ok());
 }
 
-#[cfg(feature = "experimental-width-limits")]
 #[test]
 fn construct_width_limits_are_independent_and_disabled_by_default() {
     let cases = [
@@ -398,7 +413,6 @@ fn construct_width_limits_are_independent_and_disabled_by_default() {
     }
 }
 
-#[cfg(feature = "experimental-width-limits")]
 #[test]
 fn construct_width_hard_ceilings_are_validated() {
     use spam::MAX_CONSTRUCT_WIDTH;
@@ -424,7 +438,6 @@ fn construct_width_hard_ceilings_are_validated() {
     }
 }
 
-#[cfg(feature = "experimental-width-limits")]
 #[test]
 fn construct_widths_count_only_the_immediate_level() {
     let limits = Limits {
@@ -448,7 +461,6 @@ fn construct_widths_count_only_the_immediate_level() {
     }
 }
 
-#[cfg(feature = "experimental-width-limits")]
 #[test]
 fn construct_widths_distinguish_python_grammar_roles() {
     let zero = Limits {

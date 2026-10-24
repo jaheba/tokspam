@@ -19,6 +19,13 @@ pub(super) struct Scanner {
     prev_ends_operand: bool,
     /// Whether the next non-layout token starts a logical statement.
     statement_start: bool,
+    /// Whether `case` began the current logical line. Complex-literal `+` and
+    /// `-` patterns recurse on each right operand in Ruff's parser.
+    in_pattern: bool,
+    /// Whether the next indent opens a `match` body.
+    pending_match: bool,
+    /// True for indentation levels whose suite contains `case` clauses.
+    match_blocks: Vec<bool>,
     /// Consecutive `elif` clauses at each indentation level. Python stores
     /// these as nested `If` nodes despite their flat source indentation.
     elif_runs: Vec<u32>,
@@ -70,6 +77,9 @@ impl Scanner {
             indent: 0,
             prev_ends_operand: false,
             statement_start: true,
+            in_pattern: false,
+            pending_match: false,
+            match_blocks: Vec::with_capacity(limit as usize + 2),
             elif_runs: Vec::with_capacity(limit as usize + 2),
             total: 0,
         };
@@ -88,6 +98,10 @@ impl Scanner {
         self.indent = 0;
         self.prev_ends_operand = false;
         self.statement_start = true;
+        self.in_pattern = false;
+        self.pending_match = false;
+        self.match_blocks.clear();
+        self.match_blocks.push(false);
         self.total = 0;
     }
 
@@ -127,6 +141,7 @@ impl Scanner {
     /// Updates both estimates, preserving parser rejection priority on a token.
     #[inline]
     pub(super) fn observe(&mut self, kind: Kind) -> Option<Reason> {
+        let starts_statement = self.statement_start;
         if self.ast_limit.is_some() {
             self.observe_statement_start(kind);
 
@@ -166,6 +181,8 @@ impl Scanner {
             Kind::Indent => {
                 self.indent += 1;
                 self.elif_runs.push(0);
+                self.match_blocks.push(self.pending_match);
+                self.pending_match = false;
                 self.add(1)
             }
             Kind::Dedent => {
@@ -173,9 +190,11 @@ impl Scanner {
                     self.indent -= 1;
                     self.total -= 1;
                     self.ast_total -= 1 + self.elif_runs.pop().unwrap_or(0);
+                    self.match_blocks.pop();
                 }
                 false
             }
+            Kind::Minus | Kind::Plus if self.in_pattern => self.add_tight(1),
             // Binary after an operand (`a - b`, `a * b`, `a not in b`), prefix otherwise.
             Kind::Minus | Kind::Plus | Kind::Star | Kind::Not => {
                 if self.prev_ends_operand {
@@ -194,6 +213,14 @@ impl Scanner {
                 self.top().pending_lambdas += 1;
                 false
             }
+            Kind::Match if starts_statement => {
+                self.pending_match = true;
+                false
+            }
+            Kind::Case if starts_statement && self.match_blocks.last() == Some(&true) => {
+                self.in_pattern = true;
+                false
+            }
             Kind::Colon => self.observe_colon(),
             // The `orelse` branch recurses once itself and once for its expression.
             Kind::Else => self.add_loose(2),
@@ -203,7 +230,12 @@ impl Scanner {
                 self.reset_level();
                 false
             }
-            Kind::Newline | Kind::Semi | Kind::Equal => {
+            Kind::Equal => {
+                self.in_pattern = false;
+                self.reset_level();
+                false
+            }
+            Kind::Newline | Kind::Semi => {
                 self.reset_level();
                 false
             }
@@ -249,6 +281,9 @@ impl Scanner {
             kind,
             Kind::Newline | Kind::Semi | Kind::Indent | Kind::Dedent
         );
+        if matches!(kind, Kind::Newline | Kind::Semi) {
+            self.in_pattern = false;
+        }
         if exceeded {
             Some(Reason::Nesting)
         } else if ast_exceeded || self.ast_exceeded() {

@@ -396,33 +396,38 @@ If that cannot materially reduce accepted-module overhead, share lexical work wi
 adding another independent full-file pass.
 
 Reproduce the experiment by adding `--byte-guard` to `tools/benchmark.py`.
-The benchmark executable also accepts `--guard` for timed guard/fallback checking and `--guard-probe` to report
-`proved` or `fallback` without timing; positive probe results are asserted against the normal checker.
+The benchmark executable also accepts `--guard` for timed guard/fallback checking and `--guard-probe` to report `proved`
+or `fallback` without timing; positive probe results are asserted against the normal checker.
 
 ### Statement-level fallback experiment (2026-10-24)
 
 Committed the whole-file prototype as `874fd61` before starting this experiment.
 The `experimental-regions` feature adds the opt-in `Checker::check_regions` method; normal `Checker::check` remains
-selected by default. The experimental implementation lives in `src/lexer/region.rs` and uses the existing lexer
-context stack and ordinary-literal scanner, adding no scratch allocations.
+selected by default.
+The experimental implementation lives in `src/lexer/region.rs` and uses the existing lexer context stack and
+ordinary-literal scanner, adding no scratch allocations.
 
-At logical statement boundaries, the guard attempts a complete region ending in a root newline. It counts tokens
-exactly, validates matching delimiters, and overcounts possible frame additions against the remaining parser and AST
-budgets. Layout changes are emitted by the detailed lexer before another proof is attempted. Optional token-size
-limits are checked on the same ranges as the detailed lexer. A source-byte upper bound eliminates per-token count
-comparisons when the entire remaining source already fits the remaining token budget.
+At logical statement boundaries, the guard attempts a complete region ending in a root newline.
+It counts tokens exactly, validates matching delimiters, and overcounts possible frame additions against the remaining
+parser and AST budgets.
+Layout changes are emitted by the detailed lexer before another proof is attempted.
+Optional token-size limits are checked on the same ranges as the detailed lexer.
+A source-byte upper bound eliminates per-token count comparisons when the entire remaining source already fits the
+remaining token budget.
 
 Successful proofs clear the current indentation level's elif run only when real code was present; comments and blank
-lines preserve it. Pending lambdas, leading elif/else clauses, semicolons, interpolated strings, and inconclusive
-annotation/depth bounds use detailed scanning locally. Failed proofs restore the lexer's position, contexts and stop
-flag before scanning the same statement normally. Subsequent statements can still take the fast path. The existing
-simple-prefix optimization remains first, preserving its advantage on flat assignments.
+lines preserve it.
+Pending lambdas, leading elif/else clauses, semicolons, interpolated strings, and inconclusive annotation/depth bounds
+use detailed scanning locally.
+Failed proofs restore the lexer's position, contexts and stop flag before scanning the same statement normally.
+Subsequent statements can still take the fast path.
+The existing simple-prefix optimization remains first, preserving its advantage on flat assignments.
 
-The final release comparison uses a separately built, feature-disabled normal benchmark as the baseline. Seven-sample
-medians exclude checker construction and include per-input reset. This avoids overstating gains: enabling the feature
-also made the ordinary method slower in the measured binary (for example, 184 µs on `shutil.py`, versus 159 µs without
-the feature), although it preserved its results. Build-dependent timing differences warrant care before making the
-experimental path a default.
+The final release comparison uses a separately built, feature-disabled normal benchmark as the baseline.
+Seven-sample medians exclude checker construction and include per-input reset.
+This avoids overstating gains: enabling the feature also made the ordinary method slower in the measured binary (for
+example, 184 µs on `shutil.py`, versus 159 µs without the feature), although it preserved its results.
+Build-dependent timing differences warrant care before making the experimental path a default.
 
 | Input | Normal, feature disabled | Region proofs with local fallback | Regions / Ruff parse and drop |
 | --- | ---: | ---: | ---: |
@@ -437,24 +442,30 @@ experimental path a default.
 | json/decoder.py | 31.28 µs | 22.69 µs | 27.5% |
 | re/__init__.py | 30.58 µs | 23.85 µs | 34.3% |
 
-The general modules improve by roughly 11–27% relative to the feature-disabled baseline, while the early-rejection
-case becomes slower. The broad-module overhead remains 28–41% of Ruff parsing plus AST destruction. The 10% goal is
-still met only on the tiny expression, the 80-addition case, and flat assignments in this sample. The region approach
-avoids whole-file rescanning, but still performs substantial independent lexical work and some local rescanning.
+The general modules improve by roughly 11–27% relative to the feature-disabled baseline, while the early-rejection case
+becomes slower.
+The broad-module overhead remains 28–41% of Ruff parsing plus AST destruction.
+The 10% goal is still met only on the tiny expression, the 80-addition case, and flat assignments in this sample.
+The region approach avoids whole-file rescanning, but still performs substantial independent lexical work and some local
+rescanning.
 It remains opt-in; further work should profile the proof loop and detailed fallback distribution before adding more
-lexical machinery. Sharing tokenization with the downstream parser remains the alternative if this cannot approach
-10% on representative modules.
+lexical machinery.
+Sharing tokenization with the downstream parser remains the alternative if this cannot approach 10% on representative
+modules.
 
 Verification covers exact results, reasons, and ranges on the 83-case retained corpus snapshot used in this experiment
-and 2,051 UTF-8 standard-library files under the source cap. Feature tests compare 48,000 mixed-statement cases across budgets, 20,000 malformed Unicode
-sources, 975 generated family/size/configuration combinations, and quoted-annotation fallback configurations.
-Allocation tests cover successful proofs and fallback after failures. Default and feature-enabled tests, release tests,
-and Clippy checks pass. Native annotation recursion and the other safety gaps documented in `SAFETY.md` remain.
+and 2,051 UTF-8 standard-library files under the source cap.
+Feature tests compare 48,000 mixed-statement cases across budgets, 20,000 malformed Unicode sources, 975 generated
+family/size/configuration combinations, and quoted-annotation fallback configurations.
+Allocation tests cover successful proofs and fallback after failures.
+Default and feature-enabled tests, release tests, and Clippy checks pass.
+Native annotation recursion and the other safety gaps documented in `SAFETY.md` remain.
 
-To reproduce, first save a release benchmark built without the feature, then build with
-`cargo build --release --features experimental-regions --example benchmark` and pass `--regions` to
-`tools/benchmark.py`. Its `--baseline` option accepts the saved feature-disabled benchmark. The executable also accepts
-`--regions-probe`, which asserts full rejection equality against normal checking and prints the result without timing.
+To reproduce, first save a release benchmark built without the feature, then build with `cargo build --release
+--features experimental-regions --example benchmark` and pass `--regions` to `tools/benchmark.py`.
+Its `--baseline` option accepts the saved feature-disabled benchmark.
+The executable also accepts `--regions-probe`, which asserts full rejection equality against normal checking and prints
+the result without timing.
 
 ## Runtime-generated source
 
@@ -604,24 +615,29 @@ hypotheses to this log so the next campaign explores different grammar paths.
 
 After annotation scanning became iterative, every allocation-driving setting received a hard implementation ceiling.
 The source fuzz target now derives all public settings from its input, including optional token, AST, and experimental
-construct-width limits. Each value can be zero, within its supported range, disabled where applicable, or one above its
-hard ceiling. Invalid configurations must fail before scratch allocation.
+construct-width limits.
+Each value can be zero, within its supported range, disabled where applicable, or one above its hard ceiling.
+Invalid configurations must fail before scratch allocation.
 
-A 30-second libFuzzer and AddressSanitizer run on macOS arm64 completed 1,671,362 executions without a crash or sanitizer
-finding. It reached 1,115 coverage edges and 6,145 feature edges, retained about 1,600 corpus entries, and peaked at 551
-MiB RSS under ASan. Generated inputs were capped at 4 KiB by libFuzzer for this first run. Longer campaigns should seed
-valid Python and nested annotation forms so more executions reach the detailed scanner instead of configuration
-validation and UTF-8 rejection.
+A 30-second libFuzzer and AddressSanitizer run on macOS arm64 completed 1,671,362 executions without a crash or
+sanitizer finding.
+It reached 1,115 coverage edges and 6,145 feature edges, retained about 1,600 corpus entries, and peaked at 551 MiB RSS
+under ASan.
+Generated inputs were capped at 4 KiB by libFuzzer for this first run.
+Longer campaigns should seed valid Python and nested annotation forms so more executions reach the detailed scanner
+instead of configuration validation and UTF-8 rejection.
 
-The outer source and nested annotation scans now also share cumulative byte and token work budgets. Reinterpreting a
-quoted annotation charges its contents again, preventing configured work from being multiplied by the annotation-depth
-limit. Replaying the 2,778-file calibration corpus produced no new rejection, and the 101 retained adversarial cases kept
-their previous classifications.
+The outer source and nested annotation scans now also share cumulative byte and token work budgets.
+Reinterpreting a quoted annotation charges its contents again, preventing configured work from being multiplied by the
+annotation-depth limit.
+Replaying the 2,778-file calibration corpus produced no new rejection, and the 101 retained adversarial cases kept their
+previous classifications.
 
 ## Construct-width differential oracle
 
-The construct-width oracle uses CPython's AST as an independent reference. For each metric and source, it configures only
-that Spam limit, verifies acceptance at CPython's measured maximum, and verifies the matching rejection one below it.
+The construct-width oracle uses CPython's AST as an independent reference.
+For each metric and source, it configures only that Spam limit, verifies acceptance at CPython's measured maximum, and
+verifies the matching rejection one below it.
 The first suite covers 157 boundaries across 27 sources, including unpacking, positional-only and keyword-only
 parameters, comprehensions, grouping, class bases, parenthesized imports, starred slices, adjacent strings, nested
 f-strings, format fields, and template strings when supported.
@@ -635,40 +651,73 @@ The first run found 14 mismatches:
 - tuple slices were also counted as displays by the calibration oracle;
 - interpolation fields accumulated across unrelated strings and across nested format levels.
 
-Spam now distinguishes those lexical roles. Adjacent string literals still accumulate interpolation fields because
-CPython folds them into one `JoinedStr`, while nested format levels and nested f-strings keep independent maxima. The
-calibration walker no longer counts a tuple used as `Subscript.slice` as a display. After these corrections, all 157
-boundaries matched CPython.
+Spam now distinguishes those lexical roles.
+Adjacent string literals still accumulate interpolation fields because CPython folds them into one `JoinedStr`, while
+nested format levels and nested f-strings keep independent maxima.
+The calibration walker no longer counts a tuple used as `Subscript.slice` as a display.
+After these corrections, all 157 boundaries matched CPython.
 
 ## Region cost profile
 
-`tools/profile_regions.py` instruments a committed snapshot in a temporary checkout,
-leaving production builds free of profiling branches. It samples every sixteenth
-proof, rotates the sampling phase, and subtracts calibrated clock bookkeeping.
-Stage shares are estimates; reports include instrumented wall time to expose
-measurement overhead. Tiny inputs have too much relative overhead for reliable
-stage attribution.
+`tools/profile_regions.py` instruments a committed snapshot in a temporary checkout, leaving production builds free of
+profiling branches.
+It samples every sixteenth proof, rotates the sampling phase, and subtracts calibrated clock bookkeeping.
+Stage shares are estimates; reports include instrumented wall time to expose measurement overhead.
+Tiny inputs have too much relative overhead for reliable stage attribution.
 
-The retained `campaigns/2026-10-24-region-profile/profile.json` measures `a91af29`
-on macOS arm64. Across six standard-library files, successful proofs accounted
-for about 36–54% of measured time, detailed scanning and dispatch for 38–53%, and
-failed proofs for 7–10%. Annotation rescanning was negligible in those files;
-the synthetic annotation workload spent about 76% in child scans. Instrumented
-wall time was 10–14% higher on these modules. These results identify broad cost
-centers, not exact instruction costs or parser-safety evidence.
+The retained `campaigns/2026-10-24-region-profile/profile.json` measures `a91af29` on macOS arm64.
+Across six standard-library files, successful proofs accounted for about 36–54% of measured time, detailed scanning and
+dispatch for 38–53%, and failed proofs for 7–10%.
+Annotation rescanning was negligible in those files; the synthetic annotation workload spent about 76% in child scans.
+Instrumented wall time was 10–14% higher on these modules.
+These results identify broad cost centers, not exact instruction costs or parser-safety evidence.
 
-Keeping a frame's lexer live until an annotation suspends it removes per-token
-state saves and reconstruction. A controlled comparison on `e236a65`, using the
-profiler's `--live-lexer` experiment, reduced the `shutil.py` region check from
-about 150 to 139 microseconds. The current scanner includes this change. Absolute
-results vary between runs; this is a modest improvement, not the desired 10%
-parser-overhead result.
+Keeping a frame's lexer live until an annotation suspends it removes per-token state saves and reconstruction.
+A controlled comparison on `e236a65`, using the profiler's `--live-lexer` experiment, reduced the `shutil.py` region
+check from about 150 to 139 microseconds.
+The current scanner includes this change.
+Absolute results vary between runs; this is a modest improvement, not the desired 10% parser-overhead result.
 
-Failed proofs are too small a share to explain the remaining gap. A promising
-next experiment is sharing the downstream parser's lexical pass. Inspection of
-Ruff 0.0.14 shows that its lexer constructor and token-source driver are private;
-public parsed tokens are available only after parsing. A real integration needs
-an early-abort observer plus correct handling of token checkpoints, rewinds,
-re-lexing, and separate quoted-annotation scans. Replaying already parsed tokens
-could estimate a cost floor, but would not demonstrate protection before AST
+Failed proofs are too small a share to explain the remaining gap.
+A promising next experiment is sharing the downstream parser's lexical pass.
+Inspection of Ruff 0.0.14 shows that its lexer constructor and token-source driver are private; public parsed tokens are
+available only after parsing.
+A real integration needs an early-abort observer plus correct handling of token checkpoints, rewinds, re-lexing, and
+separate quoted-annotation scans.
+Replaying already parsed tokens could estimate a cost floor, but would not demonstrate protection before AST
 construction.
+
+## Generated differential, parser, and sanitizer campaigns
+
+On 2026-10-24, a deterministic mixed-grammar differential checked 1,000 CPython 3.15 programs against Ruff 0.0.14.
+For each program, Spam was tested at CPython's exact call, parameter, display, slice, and interpolation width and one
+below it.
+There were no mismatches.
+A separate 100-case run through Pyrefly 1.4.0 had no process failure.
+
+A parser attack run tested 851 generated sources up to depth 100,000 with one-second subprocess deadlines.
+CPython or Ruff failed in 89 cases; Spam rejected every failing case.
+The SQLite importer retained 50 new shortest shapes and 12 known cases as run 31.
+Stable boundary searches found CPython `MemoryError` on 5,966 unary operators, CPython `RecursionError` on a
+95,080-member f-string attribute chain, and a Ruff process crash on a class pattern nested 86,959 levels.
+Ruff format-spec timeouts were not monotonic in adjacent controls and remain a timing direction rather than a minimized
+failure.
+
+The refreshed Python 3.15 calibration measured 2,955 valid files from the standard library, Monty, and Pydantic.
+Spam and Ruff accepted all of them.
+The largest observed widths were 154 call arguments, 66 parameters, 2,231 display items, 49 slice items, and 181
+interpolation fields.
+
+Two 120-second sanitizer runs used valid grammar seeds and source-plus-configuration seeds, including nested quoted
+annotations.
+The grammar target grew to 1,052 edges and 4,640 features in the captured run; the source target executed about 2.2
+million inputs and reached 1,194 edges and 7,331 features.
+Neither run produced a crash or sanitizer report.
+
+## Final stabilized-width benchmark
+
+The release benchmark after making width settings always available measured a reused checker at 0.03 µs for the tiny
+case, 2.97 µs for an accepted 80-member chain, 135.46 µs for a 60 KiB flat source, 226.62 µs for `shutil.py`, and 4.32
+µs for an early rejection of a 5,000-member chain.
+The accepted flat source took 9.7% of Ruff's parse time; the larger `shutil.py` input took 54.0%.
+Results are in `campaigns/2026-10-24-final-benchmark.json` and remain specific to this machine and build.

@@ -24,15 +24,10 @@ pub enum Reason {
     LexicalStructure,
     QuotedAnnotation,
     Configuration,
-    #[cfg(feature = "experimental-width-limits")]
     CallArguments,
-    #[cfg(feature = "experimental-width-limits")]
     Parameters,
-    #[cfg(feature = "experimental-width-limits")]
     DisplayItems,
-    #[cfg(feature = "experimental-width-limits")]
     SliceItems,
-    #[cfg(feature = "experimental-width-limits")]
     InterpolationFields,
 }
 
@@ -61,7 +56,6 @@ pub const MAX_NESTING_DEPTH: u16 = 1_024;
 pub const MAX_INDENTATION_DEPTH: u16 = 1_024;
 pub const MAX_ANNOTATION_DEPTH: u8 = 32;
 pub const MAX_AST_DEPTH: u16 = 4_096;
-#[cfg(feature = "experimental-width-limits")]
 pub const MAX_CONSTRUCT_WIDTH: usize = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,15 +67,10 @@ pub enum LimitKind {
     IndentationDepth,
     AnnotationDepth,
     AstDepth,
-    #[cfg(feature = "experimental-width-limits")]
     CallArguments,
-    #[cfg(feature = "experimental-width-limits")]
     Parameters,
-    #[cfg(feature = "experimental-width-limits")]
     DisplayItems,
-    #[cfg(feature = "experimental-width-limits")]
     SliceItems,
-    #[cfg(feature = "experimental-width-limits")]
     InterpolationFields,
 }
 
@@ -117,15 +106,10 @@ pub struct Limits {
     /// Flat AST-shape estimates supplement the parser-recursion rules.
     pub max_ast_depth: Option<u16>,
     /// Experimental flat-width budgets. `None` preserves the normal scanner path.
-    #[cfg(feature = "experimental-width-limits")]
     pub max_call_arguments: Option<usize>,
-    #[cfg(feature = "experimental-width-limits")]
     pub max_parameters: Option<usize>,
-    #[cfg(feature = "experimental-width-limits")]
     pub max_display_items: Option<usize>,
-    #[cfg(feature = "experimental-width-limits")]
     pub max_slice_items: Option<usize>,
-    #[cfg(feature = "experimental-width-limits")]
     pub max_interpolation_fields: Option<usize>,
 }
 
@@ -140,15 +124,10 @@ impl Default for Limits {
             max_annotation_depth: 8,
             check_string_annotations: true,
             max_ast_depth: Some(100),
-            #[cfg(feature = "experimental-width-limits")]
             max_call_arguments: None,
-            #[cfg(feature = "experimental-width-limits")]
             max_parameters: None,
-            #[cfg(feature = "experimental-width-limits")]
             max_display_items: None,
-            #[cfg(feature = "experimental-width-limits")]
             max_slice_items: None,
-            #[cfg(feature = "experimental-width-limits")]
             max_interpolation_fields: None,
         }
     }
@@ -187,7 +166,6 @@ impl Limits {
                 LimitKind::AstDepth,
             )?;
         }
-        #[cfg(feature = "experimental-width-limits")]
         for (value, kind) in [
             (self.max_call_arguments, LimitKind::CallArguments),
             (self.max_parameters, LimitKind::Parameters),
@@ -318,7 +296,6 @@ struct ScanScratch {
     lexer: LexerScratch,
     scanner: Scanner,
     annotations: AnnotationTracker,
-    #[cfg(feature = "experimental-width-limits")]
     widths: WidthTracker,
 }
 
@@ -333,7 +310,6 @@ impl ScanScratch {
                 brackets: Vec::with_capacity(budget as usize),
                 ..AnnotationTracker::default()
             },
-            #[cfg(feature = "experimental-width-limits")]
             widths: WidthTracker::new(budget as usize),
         }
     }
@@ -369,7 +345,6 @@ fn scan<const FAST: bool, const REGIONS: bool>(
             lexer: lexer_scratch,
             scanner,
             annotations,
-            #[cfg(feature = "experimental-width-limits")]
             widths,
         } = &mut scratch[index];
 
@@ -384,7 +359,6 @@ fn scan<const FAST: bool, const REGIONS: bool>(
         } else {
             scanner.reset(current.budget, current.ast_budget);
             annotations.reset();
-            #[cfg(feature = "experimental-width-limits")]
             widths.reset();
 
             let mut lexer = Lexer::new(
@@ -470,7 +444,6 @@ fn scan<const FAST: bool, const REGIONS: bool>(
             if let Some(reason) = lexical_reason {
                 return reject(reason, absolute(&token.range));
             }
-            #[cfg(feature = "experimental-width-limits")]
             if let Some(reason) = widths.observe(frame_source, token.kind, &token.range, limits) {
                 return reject(reason, absolute(&token.range));
             }
@@ -534,21 +507,10 @@ fn scan<const FAST: bool, const REGIONS: bool>(
 
 #[cfg(feature = "experimental-regions")]
 fn widths_enabled(limits: &Limits) -> bool {
-    #[cfg(feature = "experimental-width-limits")]
-    {
-        limits.widths_enabled()
-    }
-    #[cfg(not(feature = "experimental-width-limits"))]
-    {
-        let _ = limits;
-        false
-    }
+    limits.widths_enabled()
 }
 
-#[cfg(all(
-    feature = "experimental-regions",
-    feature = "experimental-width-limits"
-))]
+#[cfg(feature = "experimental-regions")]
 impl Limits {
     fn widths_enabled(&self) -> bool {
         self.max_call_arguments.is_some()
@@ -559,7 +521,6 @@ impl Limits {
     }
 }
 
-#[cfg(feature = "experimental-width-limits")]
 #[derive(Clone, Copy)]
 enum WidthKind {
     Call,
@@ -572,7 +533,6 @@ enum WidthKind {
     Ignore,
 }
 
-#[cfg(feature = "experimental-width-limits")]
 struct WidthFrame {
     kind: WidthKind,
     items: usize,
@@ -583,7 +543,6 @@ struct WidthFrame {
     adjacent_fields: usize,
 }
 
-#[cfg(feature = "experimental-width-limits")]
 struct WidthTracker {
     frames: Vec<WidthFrame>,
     previous_ends_operand: bool,
@@ -592,7 +551,6 @@ struct WidthTracker {
     root_adjacent_fields: usize,
 }
 
-#[cfg(feature = "experimental-width-limits")]
 impl WidthTracker {
     fn new(capacity: usize) -> Self {
         Self {
@@ -789,7 +747,6 @@ impl WidthTracker {
     }
 }
 
-#[cfg(feature = "experimental-width-limits")]
 impl WidthFrame {
     fn exceeded(&self, limits: &Limits) -> Option<Reason> {
         let (limit, reason) = match self.kind {

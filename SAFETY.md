@@ -19,9 +19,10 @@ malformed recovery paths.
 Source nesting may increase the size of an explicit heap-allocated work stack, subject to a hard internal limit, but
 must not increase the native Rust call-stack depth.
 
-The lexer, structural scanners, and quoted-annotation scanner are iterative. Quoted annotations use a preallocated work
-stack with one frame per configured annotation level. Suspending an outer scan stores scalar lexer state; delimiter,
-indentation, parser-depth, and AST-depth state remain in that frame's preallocated scratch storage.
+The lexer, structural scanners, and quoted-annotation scanner are iterative.
+Quoted annotations use a preallocated work stack with one frame per configured annotation level.
+Suspending an outer scan stores scalar lexer state; delimiter, indentation, parser-depth, and AST-depth state remain in
+that frame's preallocated scratch storage.
 
 ## Resource bounds
 
@@ -38,16 +39,18 @@ For accepted configuration, one call to `check` must have these bounds:
 - Annotation contents are charged to one shared byte and token budget when scanned as Python source.
 
 The current implementation preallocates scratch and work-stack storage for every permitted annotation depth before token
-scanning. Its heap allocation count and sizes depend only on `Limits`; scanning does not grow those allocations.
+scanning.
+Its heap allocation count and sizes depend only on `Limits`; scanning does not grow those allocations.
 Oversized source is rejected before this allocation step.
 The allocation regression test covers accepted and rejected input under several configurations.
-Public settings now have hard implementation ceilings. `Limits::validate` and `Checker::new` reject values above them
-before scratch allocation; the one-shot `check` API returns a configuration rejection. Optional limits remain bounded by
-the hard source and token ceilings when disabled.
+Public settings now have hard implementation ceilings.
+`Limits::validate` and `Checker::new` reject values above them before scratch allocation; the one-shot `check` API
+returns a configuration rejection.
+Optional limits remain bounded by the hard source and token ceilings when disabled.
 
-The outer source and every nested annotation scan share cumulative byte and token work budgets. An annotation range is
-charged again when its contents are interpreted as Python source, so configured work cannot be multiplied by annotation
-depth.
+The outer source and every nested annotation scan share cumulative byte and token work budgets.
+An annotation range is charged again when its contents are interpreted as Python source, so configured work cannot be
+multiplied by annotation depth.
 
 The source string is owned by the caller and is not counted as Spam working memory.
 
@@ -71,4 +74,7 @@ The safety checks require:
 6. A host deadline around Spam and the downstream parser.
    The deadline remains the final availability limit if an implementation bug violates an expected complexity bound.
 
-Before release, run the source-plus-configuration fuzz target for a sustained campaign.
+The 2026-10-24 sanitizer campaign ran both fuzz targets for 120 seconds with valid grammar, nested annotation, and
+varied-configuration seeds.
+It found no crash or sanitizer report.
+Release candidates still require longer runs on every supported platform.

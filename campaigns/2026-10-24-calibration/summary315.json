@@ -1,0 +1,122 @@
+{
+  "metadata": {
+    "format": "spam-calibration-v1",
+    "python_version": "3.15.0 (main, Oct  9 2026, 11:16:41) [Clang 21.0.0 (clang-2100.3.34.2)]",
+    "roots": [
+      {
+        "name": "stdlib",
+        "path": "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15"
+      },
+      {
+        "name": "monty",
+        "path": "/Users/jaheba/p/monty"
+      },
+      {
+        "name": "pydantic",
+        "path": "/opt/homebrew/lib/python3.15/site-packages/pydantic"
+      }
+    ],
+    "repeats": 3,
+    "maximum_bytes": 1048576,
+    "timeout_seconds": 0.5,
+    "files": 2955,
+    "skipped": {
+      "decode": 3,
+      "syntax": 4,
+      "compile": 51,
+      "tokenize": 0
+    }
+  },
+  "metrics": {
+    "source_bytes": {
+      "median": 3642,
+      "p95": 68456,
+      "p99": 151153,
+      "maximum": 620066
+    },
+    "token_count": {
+      "median": 650,
+      "p95": 11878,
+      "p99": 28557,
+      "maximum": 93480
+    },
+    "ast_nodes": {
+      "median": 439,
+      "p95": 9506,
+      "p99": 22651,
+      "maximum": 81742
+    },
+    "statement_count": {
+      "median": 50,
+      "p95": 1005,
+      "p99": 2220,
+      "maximum": 7876
+    },
+    "identifier_count": {
+      "median": 40,
+      "p95": 384,
+      "p99": 779,
+      "maximum": 1951
+    },
+    "identifier_occurrences": {
+      "median": 132,
+      "p95": 3197,
+      "p99": 7855,
+      "maximum": 28047
+    },
+    "max_call_arguments": {
+      "median": 3,
+      "p95": 8,
+      "p99": 13,
+      "maximum": 154
+    },
+    "max_parameters": {
+      "median": 2,
+      "p95": 8,
+      "p99": 12,
+      "maximum": 66
+    },
+    "max_display_items": {
+      "median": 3,
+      "p95": 29,
+      "p99": 188,
+      "maximum": 2231
+    },
+    "max_slice_items": {
+      "median": 0,
+      "p95": 2,
+      "p99": 4,
+      "maximum": 49
+    },
+    "max_interpolation_fields": {
+      "median": 0,
+      "p95": 3,
+      "p99": 7,
+      "maximum": 181
+    },
+    "parse_median_seconds": {
+      "median": 0.000278042,
+      "p95": 0.007139666,
+      "p99": 0.019249542,
+      "maximum": 0.077236792
+    },
+    "compile_median_seconds": {
+      "median": 0.000339167,
+      "p95": 0.007025417,
+      "p99": 0.017947125,
+      "maximum": 0.069525416
+    },
+    "ruff_seconds": {
+      "median": 0.004634750075638294,
+      "p95": 0.00628495798446238,
+      "p99": 0.007814541924744844,
+      "maximum": 0.17468333314172924
+    }
+  },
+  "spam_statuses": {
+    "accept": 2955
+  },
+  "ruff_statuses": {
+    "ok": 2955
+  }
+}

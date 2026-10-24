@@ -77,3 +77,13 @@ Construct-specific limits have substantially more margin than a tighter global t
 
 Raw observations are in `cpython314.json.gz`, derived percentiles and maxima are in `summary.json`, and the same 2,778
 rows are stored as calibration run 27 in `corpus/cases.sqlite`.
+
+## CPython 3.15 refresh
+
+A second run measured 2,955 valid files from CPython 3.15's standard library, the current Monty checkout, and Pydantic.
+Spam and Ruff accepted every retained file.
+The largest widths were 154 call arguments, 66 parameters, 2,231 display items, 49 slice items, and 181 interpolation
+fields.
+The corrected AST walker does not count a tuple used as a subscript slice as a separate display.
+Raw observations are in `cpython315.json.gz`, derived measurements are in `summary315.json`, and SQLite run 28 contains
+the calibration rows.

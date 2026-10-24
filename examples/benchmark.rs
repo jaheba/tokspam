@@ -14,7 +14,6 @@ fn main() {
     let mut source = String::new();
     io::stdin().read_to_string(&mut source).unwrap();
     let limits = Limits::default();
-    #[cfg(feature = "experimental-width-limits")]
     let limits = if std::env::args().any(|arg| arg == "--widths") {
         Limits {
             max_call_arguments: Some(4_096),

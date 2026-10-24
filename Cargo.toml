@@ -1,15 +1,18 @@
 [package]
-name = "spam"
+name = "python-spam"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 description = "Experimental resource-complexity screening for Python source"
 readme = "README.md"
-publish = false
+include = ["src/**", "README.md", "SAFETY.md", "LICENSE"]
+
+[lib]
+name = "spam"
 
 [features]
 experimental-regions = []
-experimental-width-limits = []
+experimental-width-limits = [] # Compatibility no-op; width limits are always available.
 
 [dependencies]
