@@ -14,6 +14,19 @@ fn main() {
     let mut source = String::new();
     io::stdin().read_to_string(&mut source).unwrap();
     let limits = Limits::default();
+    #[cfg(feature = "experimental-width-limits")]
+    let limits = if std::env::args().any(|arg| arg == "--widths") {
+        Limits {
+            max_call_arguments: Some(4_096),
+            max_parameters: Some(4_096),
+            max_display_items: Some(8_192),
+            max_slice_items: Some(4_096),
+            max_interpolation_fields: Some(4_096),
+            ..limits
+        }
+    } else {
+        limits
+    };
     if std::env::args().any(|arg| arg == "--guard-probe") {
         let mut guard = byte_guard::ByteGuard::new(limits.clone());
         let proved = guard.proves_acceptance(&source);

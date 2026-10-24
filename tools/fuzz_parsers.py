@@ -74,6 +74,7 @@ def run(command, source, timeout, memory_mib):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--spam-probe', type=Path, required=True)
+    parser.add_argument('--spam-check', choices=['check', 'check-widths'], default='check')
     parser.add_argument('--ruff-probe', type=Path, required=True)
     parser.add_argument('--monty-probe', type=Path)
     parser.add_argument('--monty-mode', choices=['compile', 'run'], default='compile')
@@ -113,7 +114,12 @@ def main():
         result = {
             'cpython': run([args.python, '-I', '-c', CPYTHON_PROBE, args.phase], source, args.timeout, args.memory_mib),
             'ruff': run([str(args.ruff_probe)], source, args.timeout, args.memory_mib),
-            'spam': run([str(args.spam_probe), 'check', str(args.screen_depth)], source, args.timeout, args.memory_mib),
+            'spam': run(
+                [str(args.spam_probe), args.spam_check, str(args.screen_depth)],
+                source,
+                args.timeout,
+                args.memory_mib,
+            ),
         }
         if args.monty_probe:
             command = [str(args.monty_probe)]

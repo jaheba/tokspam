@@ -10,5 +10,6 @@ publish = false
 
 [features]
 experimental-regions = []
+experimental-width-limits = []
 
 [dependencies]

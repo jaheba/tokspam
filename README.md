@@ -54,6 +54,12 @@ String contents are screened only at likely annotation positions, including vari
 This is a lexical heuristic, not a Python grammar check.
 Escaped and concatenated annotations are not decoded.
 
+The `experimental-width-limits` feature adds independent optional budgets for call arguments, function and lambda
+parameters, display items, subscript items, and f-string or template-string interpolation fields. All five default to
+`None`, so enabling the Cargo feature alone does not change screening. The first calibrated trial uses 4,096 for calls,
+parameters, slices, and interpolation fields and 8,192 for displays. These values are starting points rather than stable
+defaults; see the [width-limit experiment](campaigns/2026-10-24-width-limits/SUMMARY.md).
+
 ## Tests and fuzzing
 
 ```sh
@@ -82,6 +88,9 @@ python3 tools/fuzz_parsers.py \
   --python python3 \
   --output /tmp/spam-parser-campaign
 ```
+
+With a probe built using `--features experimental-width-limits`, pass `--spam-check check-widths` to replay a campaign
+with the calibrated experimental profile.
 
 The generator explores grammar families and writes `results.jsonl`, `summary.json`, and source files for parser failures
 and sources both parsers accept but Spam rejects.

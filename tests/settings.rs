@@ -219,3 +219,54 @@ fn checker_reuse_resets_state_after_every_rejection_kind() {
     );
     assert!(checker.check("x = 1\n").is_ok());
 }
+
+#[cfg(feature = "experimental-width-limits")]
+#[test]
+fn construct_width_limits_are_independent_and_disabled_by_default() {
+    let cases = [
+        ("x = f(0, 1, 2)", Reason::CallArguments, 0),
+        ("def f(a, b, c): pass", Reason::Parameters, 1),
+        ("x = lambda a, b, c: a", Reason::Parameters, 1),
+        ("x = [0, 1, 2]", Reason::DisplayItems, 2),
+        ("x = value[0, 1, 2]", Reason::SliceItems, 3),
+        ("x = f'{a}{b}{c}'", Reason::InterpolationFields, 4),
+    ];
+
+    for (source, reason, selected) in cases {
+        assert!(check(source, &Limits::default()).is_ok());
+        let mut limits = Limits::default();
+        match selected {
+            0 => limits.max_call_arguments = Some(2),
+            1 => limits.max_parameters = Some(2),
+            2 => limits.max_display_items = Some(2),
+            3 => limits.max_slice_items = Some(2),
+            4 => limits.max_interpolation_fields = Some(2),
+            _ => unreachable!(),
+        }
+        assert_eq!(check(source, &limits).unwrap_err().reason, reason);
+    }
+}
+
+#[cfg(feature = "experimental-width-limits")]
+#[test]
+fn construct_widths_count_only_the_immediate_level() {
+    let limits = Limits {
+        max_call_arguments: Some(2),
+        max_parameters: Some(2),
+        max_display_items: Some(2),
+        max_slice_items: Some(2),
+        max_interpolation_fields: Some(2),
+        ..Limits::default()
+    };
+
+    for source in [
+        "x = f(g(1, 2), h(3, 4))",
+        "def f(a=(1, 2), b=(3, 4)): pass",
+        "x = [[1, 2], [3, 4]]",
+        "x = value[other[0, 1], final[2, 3]]",
+        "x = f'{value:{width}}'",
+        "x = (1, 2,)",
+    ] {
+        assert!(check(source, &limits).is_ok(), "{source}");
+    }
+}

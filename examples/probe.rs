@@ -16,7 +16,7 @@ fn main() {
             let seed = args.get(4).expect("seed").parse().expect("numeric seed");
             print!("{}", generator::generate(family, depth, seed));
         }
-        Some("check") => {
+        Some("check") | Some("check-widths") => {
             let mut source = String::new();
             io::stdin()
                 .take(1024 * 1024 + 1)
@@ -31,6 +31,24 @@ fn main() {
                 max_ast_depth: Some(depth),
                 ..Limits::default()
             };
+            #[cfg(feature = "experimental-width-limits")]
+            let limits = if args[1] == "check-widths" {
+                Limits {
+                    max_call_arguments: Some(4_096),
+                    max_parameters: Some(4_096),
+                    max_display_items: Some(8_192),
+                    max_slice_items: Some(4_096),
+                    max_interpolation_fields: Some(4_096),
+                    ..limits
+                }
+            } else {
+                limits
+            };
+            #[cfg(not(feature = "experimental-width-limits"))]
+            assert!(
+                args[1] != "check-widths",
+                "rebuild with experimental-width-limits"
+            );
             match check(&source, &limits) {
                 Ok(()) => println!("accept"),
                 Err(error) => println!(
@@ -39,6 +57,8 @@ fn main() {
                 ),
             }
         }
-        _ => panic!("expected families, generate FAMILY DEPTH SEED, or check [DEPTH]"),
+        _ => panic!(
+            "expected families, generate FAMILY DEPTH SEED, check [DEPTH], or check-widths [DEPTH]"
+        ),
     }
 }

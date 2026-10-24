@@ -23,6 +23,16 @@ pub enum Reason {
     AstDepth,
     LexicalStructure,
     QuotedAnnotation,
+    #[cfg(feature = "experimental-width-limits")]
+    CallArguments,
+    #[cfg(feature = "experimental-width-limits")]
+    Parameters,
+    #[cfg(feature = "experimental-width-limits")]
+    DisplayItems,
+    #[cfg(feature = "experimental-width-limits")]
+    SliceItems,
+    #[cfg(feature = "experimental-width-limits")]
+    InterpolationFields,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +65,17 @@ pub struct Limits {
     pub check_string_annotations: bool,
     /// Flat AST-shape estimates supplement the parser-recursion rules.
     pub max_ast_depth: Option<u16>,
+    /// Experimental flat-width budgets. `None` preserves the normal scanner path.
+    #[cfg(feature = "experimental-width-limits")]
+    pub max_call_arguments: Option<usize>,
+    #[cfg(feature = "experimental-width-limits")]
+    pub max_parameters: Option<usize>,
+    #[cfg(feature = "experimental-width-limits")]
+    pub max_display_items: Option<usize>,
+    #[cfg(feature = "experimental-width-limits")]
+    pub max_slice_items: Option<usize>,
+    #[cfg(feature = "experimental-width-limits")]
+    pub max_interpolation_fields: Option<usize>,
 }
 
 impl Default for Limits {
@@ -68,6 +89,16 @@ impl Default for Limits {
             max_annotation_depth: 8,
             check_string_annotations: true,
             max_ast_depth: Some(100),
+            #[cfg(feature = "experimental-width-limits")]
+            max_call_arguments: None,
+            #[cfg(feature = "experimental-width-limits")]
+            max_parameters: None,
+            #[cfg(feature = "experimental-width-limits")]
+            max_display_items: None,
+            #[cfg(feature = "experimental-width-limits")]
+            max_slice_items: None,
+            #[cfg(feature = "experimental-width-limits")]
+            max_interpolation_fields: None,
         }
     }
 }
@@ -151,6 +182,8 @@ struct ScanScratch {
     lexer: LexerScratch,
     scanner: Scanner,
     annotations: AnnotationTracker,
+    #[cfg(feature = "experimental-width-limits")]
+    widths: WidthTracker,
 }
 
 impl ScanScratch {
@@ -164,6 +197,8 @@ impl ScanScratch {
                 brackets: Vec::with_capacity(budget as usize),
                 ..AnnotationTracker::default()
             },
+            #[cfg(feature = "experimental-width-limits")]
+            widths: WidthTracker::new(budget as usize),
         }
     }
 }
@@ -182,6 +217,8 @@ fn scan<const FAST: bool, const REGIONS: bool>(
         lexer,
         scanner,
         annotations,
+        #[cfg(feature = "experimental-width-limits")]
+        widths,
     } = frame;
 
     let mut lexer = Lexer::new(
@@ -192,6 +229,8 @@ fn scan<const FAST: bool, const REGIONS: bool>(
     );
     scanner.reset(budget, ast_budget);
     annotations.reset();
+    #[cfg(feature = "experimental-width-limits")]
+    widths.reset();
 
     let mut token_count = 0;
     // Scan a simple prefix without constructing tokens. At the first complex
@@ -201,6 +240,17 @@ fn scan<const FAST: bool, const REGIONS: bool>(
     // most one frame to either estimate. This upper bound only accepts lines;
     // anything outside it falls back to the exact counters and error ranges.
     let simple_budget = budget.min(ast_budget.unwrap_or(budget)) as usize;
+    #[cfg(feature = "experimental-regions")]
+    let widths_enabled = {
+        #[cfg(feature = "experimental-width-limits")]
+        {
+            limits.widths_enabled()
+        }
+        #[cfg(not(feature = "experimental-width-limits"))]
+        {
+            false
+        }
+    };
     if FAST {
         while let Some(count) = lexer.skip_simple_line(
             simple_budget,
@@ -220,7 +270,7 @@ fn scan<const FAST: bool, const REGIONS: bool>(
     #[cfg_attr(not(feature = "experimental-regions"), allow(clippy::while_let_loop))]
     loop {
         #[cfg(feature = "experimental-regions")]
-        if REGIONS && region_start && annotations.region_ready() {
+        if REGIONS && !widths_enabled && region_start && annotations.region_ready() {
             if let Some(remaining) = scanner.region_budget() {
                 if let Some((count, seen_code)) = lexer.skip_region(
                     remaining,
@@ -269,6 +319,13 @@ fn scan<const FAST: bool, const REGIONS: bool>(
                 range: token.range,
             });
         }
+        #[cfg(feature = "experimental-width-limits")]
+        if let Some(reason) = widths.observe(source, token.kind, &token.range, limits) {
+            return Err(Rejection {
+                reason,
+                range: token.range,
+            });
+        }
         if limits.check_string_annotations && (annotation_source || annotations.active()) {
             if let Some(contents) = token.contents {
                 // Raw contents avoid allocating decoded strings. Escaped annotations
@@ -306,6 +363,195 @@ fn scan<const FAST: bool, const REGIONS: bool>(
         annotations.observe(source, token.kind, &token.range);
     }
     Ok(())
+}
+
+#[cfg(all(
+    feature = "experimental-regions",
+    feature = "experimental-width-limits"
+))]
+impl Limits {
+    fn widths_enabled(&self) -> bool {
+        self.max_call_arguments.is_some()
+            || self.max_parameters.is_some()
+            || self.max_display_items.is_some()
+            || self.max_slice_items.is_some()
+            || self.max_interpolation_fields.is_some()
+    }
+}
+
+#[cfg(feature = "experimental-width-limits")]
+#[derive(Clone, Copy)]
+enum WidthKind {
+    Call,
+    Parameters,
+    Display,
+    Slice,
+    FString,
+    Interpolation { in_format: bool },
+}
+
+#[cfg(feature = "experimental-width-limits")]
+struct WidthFrame {
+    kind: WidthKind,
+    items: usize,
+    seen_item: bool,
+}
+
+#[cfg(feature = "experimental-width-limits")]
+struct WidthTracker {
+    frames: Vec<WidthFrame>,
+    previous_ends_operand: bool,
+    pending_def: bool,
+    interpolation_fields: usize,
+}
+
+#[cfg(feature = "experimental-width-limits")]
+impl WidthTracker {
+    fn new(capacity: usize) -> Self {
+        Self {
+            frames: Vec::with_capacity(capacity + 1),
+            previous_ends_operand: false,
+            pending_def: false,
+            interpolation_fields: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.frames.clear();
+        self.previous_ends_operand = false;
+        self.pending_def = false;
+        self.interpolation_fields = 0;
+    }
+
+    fn observe(
+        &mut self,
+        source: &str,
+        kind: Kind,
+        range: &Range<usize>,
+        limits: &Limits,
+    ) -> Option<Reason> {
+        if kind == Kind::Name && &source[range.clone()] == "def" {
+            self.pending_def = true;
+        }
+
+        let opened = match kind {
+            Kind::FStringStart => Some(WidthKind::FString),
+            Kind::Lambda => Some(WidthKind::Parameters),
+            Kind::Lpar if self.pending_def => {
+                self.pending_def = false;
+                Some(WidthKind::Parameters)
+            }
+            Kind::Lpar if self.previous_ends_operand => Some(WidthKind::Call),
+            Kind::Lpar => Some(WidthKind::Display),
+            Kind::Lsqb if self.previous_ends_operand => Some(WidthKind::Slice),
+            Kind::Lsqb => Some(WidthKind::Display),
+            Kind::Lbrace
+                if matches!(
+                    self.frames.last().map(|frame| frame.kind),
+                    Some(WidthKind::FString | WidthKind::Interpolation { in_format: true })
+                ) =>
+            {
+                self.interpolation_fields += 1;
+                if limits
+                    .max_interpolation_fields
+                    .is_some_and(|limit| self.interpolation_fields > limit)
+                {
+                    return Some(Reason::InterpolationFields);
+                }
+                Some(WidthKind::Interpolation { in_format: false })
+            }
+            Kind::Lbrace => Some(WidthKind::Display),
+            _ => None,
+        };
+
+        if let Some(opened) = opened {
+            if let Some(parent) = self.frames.last_mut() {
+                parent.seen_item = true;
+            }
+            self.frames.push(WidthFrame {
+                kind: opened,
+                items: 0,
+                seen_item: false,
+            });
+        } else if kind == Kind::Comma {
+            if let Some(frame) = self.frames.last_mut()
+                && frame.seen_item
+            {
+                frame.items += 1;
+                frame.seen_item = false;
+                if let Some(reason) = frame.exceeded(limits) {
+                    return Some(reason);
+                }
+            }
+        } else if matches!(
+            kind,
+            Kind::Rpar | Kind::Rsqb | Kind::Rbrace | Kind::FStringEnd
+        ) || (kind == Kind::Colon
+            && matches!(
+                self.frames.last().map(|frame| frame.kind),
+                Some(WidthKind::Parameters)
+            ))
+        {
+            if let Some(mut frame) = self.frames.pop() {
+                frame.items += usize::from(frame.seen_item);
+                if let Some(reason) = frame.exceeded(limits) {
+                    return Some(reason);
+                }
+            }
+            if let Some(parent) = self.frames.last_mut() {
+                parent.seen_item = true;
+            }
+        } else {
+            if kind == Kind::Colon
+                && let Some(WidthFrame {
+                    kind: WidthKind::Interpolation { in_format },
+                    ..
+                }) = self.frames.last_mut()
+            {
+                *in_format = true;
+            }
+            if !matches!(
+                kind,
+                Kind::Indent | Kind::Dedent | Kind::Newline | Kind::Semi
+            ) {
+                if let Some(frame) = self.frames.last_mut() {
+                    frame.seen_item = true;
+                }
+            }
+        }
+
+        if matches!(kind, Kind::Newline | Kind::Semi) {
+            self.pending_def = false;
+        }
+        self.previous_ends_operand = matches!(
+            kind,
+            Kind::Name
+                | Kind::Case
+                | Kind::Int
+                | Kind::String
+                | Kind::FStringEnd
+                | Kind::Rpar
+                | Kind::Rsqb
+                | Kind::Rbrace
+        );
+        None
+    }
+}
+
+#[cfg(feature = "experimental-width-limits")]
+impl WidthFrame {
+    fn exceeded(&self, limits: &Limits) -> Option<Reason> {
+        let (limit, reason) = match self.kind {
+            WidthKind::Call => (limits.max_call_arguments, Reason::CallArguments),
+            WidthKind::Parameters => (limits.max_parameters, Reason::Parameters),
+            WidthKind::Display => (limits.max_display_items, Reason::DisplayItems),
+            WidthKind::Slice => (limits.max_slice_items, Reason::SliceItems),
+            WidthKind::FString | WidthKind::Interpolation { .. } => return None,
+        };
+        limit
+            .is_some_and(|limit| self.items > limit)
+            .then_some(reason)
+    }
 }
 
 #[derive(Default)]
