@@ -58,7 +58,7 @@ fn allocations(run: impl FnOnce() -> Result<(), Rejection>) -> Allocations {
 }
 
 #[test]
-fn construction_and_scanning_never_allocate() {
+fn source_cannot_change_allocation_count_or_size() {
     let sources = [
         String::new(),
         "lambda ".repeat(usize::from(u16::MAX) + 1),
@@ -119,7 +119,7 @@ fn construction_and_scanning_never_allocate() {
         },
     ] {
         let expected = allocations(|| check("", &limits));
-        assert_eq!(expected, Allocations::default());
+        assert_eq!(expected.reallocations, 0);
 
         for source in &sources {
             assert_eq!(
@@ -153,8 +153,12 @@ fn construction_and_scanning_never_allocate() {
 }
 
 #[test]
-fn construction_at_hard_limits_never_allocates() {
+fn annotation_depth_shares_bounded_backing_buffers() {
     println!("Checker inline bytes: {}", std::mem::size_of::<Checker>());
+    println!(
+        "Default scratch: {:?}",
+        allocations(|| check("", &Limits::default()))
+    );
 
     for (name, nesting, indentation) in [
         ("default", 100, 80),
@@ -187,13 +191,14 @@ fn construction_at_hard_limits_never_allocates() {
         });
 
         println!("{name}: outer-only {outer_only:?}; 32 annotation levels {nested:?}");
-        assert_eq!(outer_only, Allocations::default());
-        assert_eq!(nested, Allocations::default());
+        assert_eq!(outer_only.calls, nested.calls);
+        assert_eq!(nested.reallocations, 0);
+        assert!(nested.bytes < outer_only.bytes * 3);
     }
 }
 
 #[test]
-fn hard_depth_boundaries_use_inline_storage() {
+fn hard_depth_boundaries_do_not_grow_scratch() {
     let nesting = usize::from(tokspam::MAX_NESTING_DEPTH);
     let limits = Limits {
         max_nesting_depth: tokspam::MAX_NESTING_DEPTH,

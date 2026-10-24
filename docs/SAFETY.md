@@ -16,11 +16,11 @@ Those controls belong to the interpreter and its host.
 Production code must not recurse over source structure.
 This includes Python delimiters, indentation, f-string fields, format specifications, expressions, annotations, and
 malformed recovery paths.
-Source nesting may increase the size of an explicit inline work stack, subject to a hard internal limit, but
+Source nesting may increase the size of an explicit heap-backed work stack, subject to a hard internal limit, but
 must not increase the native Rust call-stack depth.
 
 The lexer, structural scanners, and quoted-annotation scanner are iterative.
-Quoted annotations use a fixed-capacity inline work stack with one frame per permitted annotation level.
+Quoted annotations use a bounded preallocated work stack with one frame per permitted annotation level.
 Suspending an outer scan retains scalar tracking state and leaves its live stack entries in shared backing buffers.
 The child uses a new segment above those entries; returning truncates the child segment and restores the parent.
 Children inherit the remaining parser-depth budget, so live delimiter and indentation entries across scans are bounded
@@ -44,9 +44,10 @@ For accepted configuration, one call to `check` must have these bounds:
 - Ordinary scanning is linear in source bytes and emitted tokens.
 - Annotation contents are charged to one shared byte and token budget when scanned as Python source.
 
-The implementation uses seven shared inline scratch arrays and an inline array of scalar work frames.
-Capacities are compile-time constants derived from the hard nesting and annotation ceilings, including per-frame roots
-and transient overflow entries. Lower configured limits do not reduce storage size.
+The implementation uses seven shared `Vec` scratch buffers and a preallocated work-frame `Vec`.
+Capacities are determined by configured nesting, indentation, and annotation limits, including per-frame roots and
+transient overflow entries. The width tracker reserves its hard capacity for unfinished lambda parameter lists, which
+can accumulate before charging parser depth. Capacities remain bounded by hard implementation ceilings.
 Internal field widths retain the full hard-limit range: stack marks use `u16` (capacity at most 65,535), saved binary
 operand depths use `u16` (the AST ceiling plus at most six precedence folds), and construct counts use `u32` (bounded
 by the shared token budget). Indentation columns use `u32`; each source byte adds at most eight columns, including tabs.
@@ -55,13 +56,12 @@ and depth arithmetic remain `u32`; only bounded saved values are narrowed. Separ
 per-entry tuple padding without changing the six-entry operator stack.
 Unfinished lambda parameter lists can retain width frames before charging parser depth. Exhausting the fixed width
 buffer returns `Inconclusive`, because a structural violation has not necessarily been established.
-Construction and scanning perform zero heap allocations. Arrays are fully initialized using safe Rust; no uninitialized
-storage or unsafe indexing is used. Rejection does not leave segment bases active for the next check.
+Construction allocates scratch storage before token scanning; scanning performs zero heap allocations. Allocation
+count and sizes depend only on configuration. Pushes cannot silently grow buffers if accounting invariants are broken.
+Rejection does not leave segment bases active for the next check.
 The allocation regression tests cover construction and accepted and rejected input under several configurations.
 `Limits::validate` and `Checker::new` reject settings above the hard ceilings; the one-shot `check` API returns a
 configuration rejection and rejects oversized source before constructing its checker.
-Inline scratch increases native stack requirements when a checker is constructed locally. Stack use remains constant
-with respect to input structure; hosts must provision enough stack for the checker and construction temporaries.
 Optional limits remain bounded by the hard source and token ceilings when disabled.
 
 The outer source and every nested annotation scan share cumulative byte and token work budgets. `max_work_units` also

@@ -131,6 +131,13 @@ pub(super) struct LexerState {
 }
 
 impl LexerScratch {
+    pub(super) fn with_capacity(contexts: usize, indents: usize) -> Self {
+        Self {
+            contexts: Stack::with_capacity(contexts),
+            indents: Stack::with_capacity(indents),
+        }
+    }
+
     pub(super) fn suspend(&mut self) -> [Mark; 2] {
         [self.contexts.suspend(), self.indents.suspend()]
     }

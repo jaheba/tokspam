@@ -208,7 +208,7 @@ fn validate_limit(value: usize, maximum: usize, limit: LimitKind) -> Result<(), 
 
 /// Rejects source that exceeds the configured structural budgets.
 /// Successful screening does not validate Python syntax.
-/// Performs no heap allocations, including construction of its inline scratch.
+/// Allocates bounded scratch before scanning; scanning performs no heap allocations.
 /// Use [`Checker`] to reuse that scratch across multiple inputs.
 pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
     if limits.validate().is_err() {
@@ -227,9 +227,9 @@ pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
     Checker::new_validated(limits.clone()).check(source)
 }
 
-/// Reusable screening state backed by fixed-capacity inline arrays.
-/// Construction and checks perform no heap allocations. Storage is sized for
-/// the hard implementation ceilings, even when configured limits are smaller.
+/// Reusable screening state backed by bounded, shared scratch buffers.
+/// Construction reserves storage from the configured limits; subsequent checks
+/// perform no heap allocations.
 ///
 /// Use one checker per worker when screening many inputs before parsing them.
 /// Source strings are borrowed only for the duration of each check.
@@ -246,9 +246,11 @@ impl Checker {
     }
 
     fn new_validated(limits: Limits) -> Self {
+        let frames = annotation_frames(&limits);
+
         Self {
             scratch: ScanScratch::new(&limits),
-            work: Stack::default(),
+            work: Stack::with_capacity(frames),
             limits,
         }
     }
@@ -291,7 +293,7 @@ struct ScanWork {
     outer_annotation: Option<Range<usize>>,
 }
 
-// One set of inline buffers serves every scan. Work frames save only scalar
+// One set of shared buffers serves every scan. Work frames save only scalar
 // state and segment marks; suspended entries remain below the active base.
 struct ScanScratch {
     lexer: LexerScratch,
@@ -334,15 +336,37 @@ impl ScanScratch {
     }
 
     fn new(limits: &Limits) -> Self {
+        let frames = annotation_frames(limits);
+        let capacity = usize::from(limits.max_nesting_depth) + frames + 1;
+
         Self {
-            lexer: LexerScratch::default(),
-            scanner: Scanner::new(
+            lexer: LexerScratch::with_capacity(
+                capacity,
+                usize::from(limits.max_nesting_depth.min(limits.max_indentation_depth))
+                    + frames
+                    + 1,
+            ),
+            scanner: Scanner::with_capacity(
                 u32::from(limits.max_nesting_depth),
                 limits.max_ast_depth.map(u32::from),
+                capacity,
             ),
-            annotations: AnnotationTracker::default(),
+            annotations: AnnotationTracker {
+                brackets: Stack::with_capacity(capacity),
+                state: AnnotationState::default(),
+            },
+            // Pending lambda parameter lists do not charge parser depth until
+            // their colons arrive. Preserve the full bounded width capacity.
             widths: WidthTracker::new(),
         }
+    }
+}
+
+fn annotation_frames(limits: &Limits) -> usize {
+    if limits.check_string_annotations {
+        usize::from(limits.max_annotation_depth) + 1
+    } else {
+        1
     }
 }
 

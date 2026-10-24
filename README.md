@@ -43,9 +43,9 @@ fn main() -> Result<(), tokspam::Rejection> {
 ```
 
 A rejection includes a reason and a byte range. Reuse one `Checker` per worker:
-construction and scanning perform no heap allocations. Scratch storage uses
-fixed-capacity inline arrays sized for the hard limits; smaller configured limits
-do not shrink the checker. For a one-off check, use `tokspam::check`.
+construction reserves bounded scratch in shared `Vec` buffers, and scanning
+performs no heap allocations. Buffer sizes follow configured limits, except the
+width tracker reserves its hard capacity for unfinished lambda parameter lists. For a one-off check, use `tokspam::check`.
 The library has no runtime dependencies.
 
 ## Scope

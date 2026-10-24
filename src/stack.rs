@@ -1,4 +1,4 @@
-//! Inline segmented stacks; annotation scans share buffers without copying entries.
+//! Bounded Vec-backed segmented stacks; annotation scans share buffers without copying entries.
 use std::ops::{Deref, DerefMut};
 
 pub(crate) const SCAN_FRAMES: usize = crate::MAX_ANNOTATION_DEPTH as usize + 1;
@@ -12,72 +12,75 @@ pub(crate) struct Mark {
 }
 
 pub(crate) struct Stack<T, const N: usize> {
-    data: [T; N],
+    data: Vec<T>,
     base: usize,
-    len: usize,
 }
 
-impl<T: Default, const N: usize> Default for Stack<T, N> {
+impl<T, const N: usize> Default for Stack<T, N> {
     fn default() -> Self {
-        // Every stack mark is an index into one bounded inline array.
-        const {
-            assert!(N <= u16::MAX as usize);
-        }
-
-        Self {
-            data: std::array::from_fn(|_| T::default()),
-            base: 0,
-            len: 0,
-        }
+        Self::with_capacity(N)
     }
 }
 
 impl<T, const N: usize> Stack<T, N> {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        const {
+            assert!(N <= u16::MAX as usize);
+        }
+        assert!(capacity <= N);
+
+        Self {
+            data: Vec::with_capacity(capacity),
+            base: 0,
+        }
+    }
+
     pub(crate) fn reset(&mut self) {
+        self.data.clear();
         self.base = 0;
-        self.len = 0;
     }
 
     pub(crate) fn clear(&mut self) {
-        self.len = self.base;
+        self.data.truncate(self.base);
     }
 
     #[cfg(feature = "experimental-regions")]
     pub(crate) fn truncate(&mut self, length: usize) {
-        self.len = self.len.min(self.base + length);
+        self.data.truncate(self.base + length);
     }
 
     pub(crate) fn is_full(&self) -> bool {
-        self.len == N
+        self.data.len() == N
     }
 
     pub(crate) fn push(&mut self, value: T) {
-        self.data[self.len] = value;
-        self.len += 1;
+        // Capacities are fixed at construction, independently of input. Never
+        // silently allocate if a structural accounting invariant is broken.
+        assert!(self.data.len() < self.data.capacity() && !self.is_full());
+        self.data.push(value);
     }
 
     pub(crate) fn suspend(&mut self) -> Mark {
         let mark = Mark {
             base: self.base as u16,
-            len: self.len as u16,
+            len: self.data.len() as u16,
         };
-        self.base = self.len;
+        self.base = self.data.len();
         mark
     }
 
     pub(crate) fn restore(&mut self, mark: Mark) {
         self.base = usize::from(mark.base);
-        self.len = usize::from(mark.len);
+        self.data.truncate(usize::from(mark.len));
     }
 }
 
-impl<T: Default, const N: usize> Stack<T, N> {
+impl<T, const N: usize> Stack<T, N> {
     pub(crate) fn pop(&mut self) -> Option<T> {
-        if self.len == self.base {
+        if self.data.len() == self.base {
             None
         } else {
-            self.len -= 1;
-            Some(std::mem::take(&mut self.data[self.len]))
+            self.data.pop()
         }
     }
 }
@@ -86,13 +89,13 @@ impl<T, const N: usize> Deref for Stack<T, N> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
-        &self.data[self.base..self.len]
+        &self.data[self.base..]
     }
 }
 
 impl<T, const N: usize> DerefMut for Stack<T, N> {
     fn deref_mut(&mut self) -> &mut [T] {
-        &mut self.data[self.base..self.len]
+        &mut self.data[self.base..]
     }
 }
 

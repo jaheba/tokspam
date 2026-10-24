@@ -6,13 +6,14 @@ quoted annotations interpreted as Python. Exhausting that budget returns `Reason
 specific structural violation.
 `check` returns a reason and a byte range for rejected input.
 For repeated use, create a `Checker` once per worker.
-Construction, the one-shot `check` function, and every reusable check perform zero heap allocations, including checks
-after a rejection. Scratch arrays are stored inline and sized for the hard implementation ceilings. Lower runtime
-limits do not reduce the checker's size. Reuse avoids initializing these arrays for every input.
-On the measured 64-bit target, `size_of::<Checker>()` is 82,072 bytes (about 80 KiB), excluding the borrowed source.
-Local construction also needs stack space for compiler-generated temporaries. Construction and one-shot calls were
-checked on 2 MiB thread stacks in debug builds and 1 MiB stacks in release builds; these are tested configurations,
-not portable minimum stack requirements.
+Construction reserves bounded heap storage in shared `Vec` buffers. Every subsequent check performs zero heap
+allocations, including the first check and checks after rejection. The one-shot `check` constructs and drops this storage
+on each call. Most capacities follow configured limits; width tracking reserves its hard capacity because unfinished
+lambda parameter lists can accumulate before parser depth is charged. Compact stack entries and shared annotation
+segments keep the memory savings independent of the backing storage.
+On the measured 64-bit target, `size_of::<Checker>()` is 472 bytes. Scratch requests total 24,698 bytes at default
+limits and 81,718 bytes at maximum structural and annotation depths, in eight allocations. These figures exclude
+allocator overhead and the borrowed source.
 
 ```rust
 use tokspam::{Checker, Limits};
@@ -50,11 +51,11 @@ back to detailed scanning.
 
 The lexer handles comments, strings, f-strings, template strings, indentation, and explicit line continuations.
 It retains bounded stacks and scans without storing a token list.
-Scratch storage consists of fixed-capacity inline arrays; neither construction nor input scanning allocates on the heap,
-including while scanning nested quoted annotations.
+Scratch storage is reserved before scanning. Its allocation count and capacities depend only on configuration, and
+input cannot grow the buffers, including while scanning nested quoted annotations.
 Quoted annotations are scanned with an explicit preallocated work stack; source structure never adds native Rust stack
 frames. Suspended scans share segmented scratch buffers, retaining only scalar state per annotation level. Buffer
-capacities cover hard structural limits plus annotation depth rather than reserving full buffers for every level.
+capacities cover configured structural limits plus annotation depth rather than reserving full buffers for every level.
 The one-shot function rejects oversized source before constructing its checker.
 String contents are screened only at likely annotation positions, including variable, parameter, and return annotations.
 Only the first operand of `Annotated[...]` is treated as a type; subsequent metadata operands and all
