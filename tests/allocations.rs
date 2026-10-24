@@ -128,6 +128,14 @@ fn source_cannot_change_allocation_count_or_size() {
                 "{source:?}",
             );
             assert_eq!(checker.check(source), check(source, &limits));
+            #[cfg(feature = "experimental-regions")]
+            {
+                assert_eq!(
+                    allocations(|| checker.check_regions(source)),
+                    Allocations::default()
+                );
+                assert_eq!(checker.check_regions(source), checker.check(source));
+            }
             assert_eq!(
                 allocations(|| {
                     if std::hint::black_box(guard.proves_acceptance(source)) {

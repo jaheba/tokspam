@@ -1,0 +1,14 @@
+{
+  "format": "spam-resource-campaign-v1",
+  "description": "Representative controls and threshold crossings from the fifty-idea campaign",
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "time_limit_seconds": 0.1,
+  "incremental_memory_limit_bytes": 67108864,
+  "generator": "generate.py",
+  "implementations": {
+    "cpython-3.14": "3.14.2",
+    "pyrefly-1.4.0": "1.4.0"
+  },
+  "cases": 18
+}

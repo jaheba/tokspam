@@ -44,6 +44,7 @@ def main():
     parser.add_argument('--spam-bench', type=Path, required=True)
     parser.add_argument('--ruff-probe', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--regions', action='store_true', help='Measure experimental region fallback (requires experimental-regions build)')
     parser.add_argument('--byte-guard', action='store_true', help='Measure the experimental byte guard plus fallback')
     parser.add_argument('--baseline', type=Path, help='Previous Spam benchmark binary supporting --reuse')
     parser.add_argument('--stdlib-file', action='append', default=[],
@@ -83,6 +84,12 @@ def main():
                 raise ValueError(f'{name}: byte guard changed screening behavior')
             guard_summary = (f", guard {result['byte_guard']['ns'] / 1000:.2f} µs "
                              f"({'proved' if result['byte_guard_proved'] else 'fallback'})")
+        if args.regions:
+            result['regions'] = rust_ns(args.spam_bench.resolve(), source, '--regions')
+            if result['regions']['status'] != spam['status']:
+                raise ValueError(f'{name}: region fallback changed screening behavior')
+            guard_summary += (f", regions {result['regions']['ns'] / 1000:.2f} µs "
+                              f"({result['regions']['ns'] / ruff['ns']:.1%} of Ruff)")
         results.append(result)
         print(f'{name}: Spam {spam["ns"] / 1000:.1f} µs ({spam["status"]}), '
               f'reused {spam_reused["ns"] / 1000:.2f} µs, '

@@ -1,6 +1,9 @@
 //! Streaming byte lexer. It preserves source ranges and never decodes literals.
 use std::ops::Range;
 
+#[cfg(feature = "experimental-regions")]
+mod region;
+
 const NAME_BYTE: u8 = 1;
 const NUMBER_BYTE: u8 = 2;
 

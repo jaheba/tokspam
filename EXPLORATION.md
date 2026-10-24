@@ -234,17 +234,19 @@ The accepted real-source example adds about 0.30 ms of Spam work before Ruff par
 
 ### Reusable checker and scan specialization (2026-10-24)
 
-After committing limit-based preallocation (`05b7e0e`), release measurements on macOS arm64 with Rust 1.99.0 showed
-that constructing scratch storage on every call dominated small-input cost. The committed binary measured about
-1.70 µs for `x = 1 + 2`, 660 µs for 60,000 bytes of flat assignments, and 287 µs for the installed `shutil.py`.
+After committing limit-based preallocation (`05b7e0e`), release measurements on macOS arm64 with Rust 1.99.0 showed that
+constructing scratch storage on every call dominated small-input cost.
+The committed binary measured about 1.70 µs for `x = 1 + 2`, 660 µs for 60,000 bytes of flat assignments, and 287 µs for
+the installed `shutil.py`.
 
-`Checker::new(limits)` now owns scratch storage across calls. `Checker::check` resets state but allocates nothing;
-it does not retain source borrows. The parser-depth and AST-depth passes specialize on a compile-time flag, and
-inline hints on token iteration and scanner observation allow optimization within the screening loop.
+`Checker::new(limits)` now owns scratch storage across calls.
+`Checker::check` resets state but allocates nothing; it does not retain source borrows.
+The parser-depth and AST-depth passes specialize on a compile-time flag, and inline hints on token iteration and scanner
+observation allow optimization within the screening loop.
 The convenience `check` still includes construction and destruction on every call.
 
-The updated `tools/benchmark.py` reports both APIs. Seven-sample medians from a run with CPython 3.15.0 and the
-existing Ruff 0.0.14 release probe were:
+The updated `tools/benchmark.py` reports both APIs.
+Seven-sample medians from a run with CPython 3.15.0 and the existing Ruff 0.0.14 release probe were:
 
 | Input | Bytes | `check` | Reused `Checker` | Ruff | CPython |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -254,42 +256,51 @@ existing Ruff 0.0.14 release probe were:
 | `shutil.py` | 60,689 | 244 µs | 250 µs | 413 µs | 5,126 µs |
 | 5,000 additions, rejected early | 20,006 | 3.9 µs | 2.38 µs | 456 µs | 5,155 µs |
 
-These microbenchmarks include per-call state reset and exclude process startup. Reused measurements exclude
-checker construction; the convenience measurements include it. Small differences between the two APIs on large
-inputs are within the variation seen between runs. The installed standard-library source differs from the older
-measurement above, so compare the optimization against the same-session committed binary instead.
+These microbenchmarks include per-call state reset and exclude process startup.
+Reused measurements exclude checker construction; the convenience measurements include it.
+Small differences between the two APIs on large inputs are within the variation seen between runs.
+The installed standard-library source differs from the older measurement above, so compare the optimization against the
+same-session committed binary instead.
 
-Reuse reduces tiny-input latency by about 16× relative to the committed allocation baseline. The larger accepted
-examples improve roughly 13–16%, but screening still adds about 39% of Ruff's parsing time for flat assignments
-and 61% for `shutil.py`. It is about 2–5% of CPython's `ast.parse` time on these accepted examples. This is useful
-progress, not negligible overhead before a fast Rust parser. Remaining optimization work should profile token
-classification and the two structural passes on a broader accepted-source corpus, preserving the existing checks.
+Reuse reduces tiny-input latency by about 16× relative to the committed allocation baseline.
+The larger accepted examples improve roughly 13–16%, but screening still adds about 39% of Ruff's parsing time for flat
+assignments and 61% for `shutil.py`.
+It is about 2–5% of CPython's `ast.parse` time on these accepted examples.
+This is useful progress, not negligible overhead before a fast Rust parser.
+Remaining optimization work should profile token classification and the two structural passes on a broader
+accepted-source corpus, preserving the existing checks.
 
 Rejection time depends on where the first limit is crossed; the 5,000-addition case stops near its 100th operator.
 
 ### Combined scan and bounded simple-prefix path (2026-10-24)
 
-Profiling the previous reusable implementation by stage showed about 180 µs in lexing alone versus 250 µs in
-full screening for `shutil.py`. For flat assignments, lexing took about 262 µs versus 540 µs in full screening.
-These isolated stage timings identify costs; they are not additive because optimizing the combined loop changes
-inlining and code layout.
+Profiling the previous reusable implementation by stage showed about 180 µs in lexing alone versus 250 µs in full
+screening for `shutil.py`.
+For flat assignments, lexing took about 262 µs versus 540 µs in full screening.
+These isolated stage timings identify costs; they are not additive because optimizing the combined loop changes inlining
+and code layout.
 
-The implementation now shares parser/AST structural state with independent depth totals. It preserves parser
-rejection priority and checks AST operator depth before the operator can release prefix frames. A 256-byte static
-table classifies identifier and numeric continuation bytes. Ordinary strings search for quote/backslash/newline
-candidates in a tight loop, comparing triple-quote delimiters only at quote candidates.
+The implementation now shares parser/AST structural state with independent depth totals.
+It preserves parser rejection priority and checks AST operator depth before the operator can release prefix frames.
+A 256-byte static table classifies identifier and numeric continuation bytes.
+Ordinary strings search for quote/backslash/newline candidates in a tight loop, comparing triple-quote delimiters only
+at quote candidates.
 
-A conservative prefix path counts tokens without constructing them for short, unindented simple lines. It excludes
-strings, delimiters, colons, continuations, semicolons, non-ASCII input, and keywords retaining cross-line state.
-Each eligible byte contributes at most one frame to either estimate; requiring the line byte count to fit both
-budgets proves that detailed depth accounting cannot reject the line. Token count and token-size checks remain
-exact. Failed attempts leave the lexer position unchanged. At the first failed line the entire remainder uses the
-detailed scanner, avoiding repeated fast-path attempts on complex modules. Every successfully skipped line leaves
-structural and annotation state equal to initial state after its newline.
+A conservative prefix path counts tokens without constructing them for short, unindented simple lines.
+It excludes strings, delimiters, colons, continuations, semicolons, non-ASCII input, and keywords retaining cross-line
+state.
+Each eligible byte contributes at most one frame to either estimate; requiring the line byte count to fit both budgets
+proves that detailed depth accounting cannot reject the line.
+Token count and token-size checks remain exact.
+Failed attempts leave the lexer position unchanged.
+At the first failed line the entire remainder uses the detailed scanner, avoiding repeated fast-path attempts on complex
+modules.
+Every successfully skipped line leaves structural and annotation state equal to initial state after its newline.
 
-The following final seven-sample medians compare the previous reusable binary against these changes on the same
-macOS arm64 environment (Rust 1.99.0, CPython 3.15.0, Ruff 0.0.14). Construction is excluded from both Spam columns;
-per-input reset is included. The Ruff denominator includes parsing and AST destruction.
+The following final seven-sample medians compare the previous reusable binary against these changes on the same macOS
+arm64 environment (Rust 1.99.0, CPython 3.15.0, Ruff 0.0.14).
+Construction is excluded from both Spam columns; per-input reset is included.
+The Ruff denominator includes parsing and AST destruction.
 
 | Input | Previous reused checker | Current reused checker | Current / Ruff |
 | --- | ---: | ---: | ---: |
@@ -304,20 +315,23 @@ per-input reset is included. The Ruff denominator includes parsing and AST destr
 | json/decoder.py | 54.75 µs | 30.48 µs | 36.7% |
 | re/__init__.py | 66.08 µs | 30.34 µs | 40.8% |
 
-All entries except `chain-5000` were accepted by Spam. The early-rejection result measures rejection latency,
-not accepted-input overhead. Reused checks still perform zero heap allocations.
+All entries except `chain-5000` were accepted by Spam.
+The early-rejection result measures rejection latency, not accepted-input overhead.
+Reused checks still perform zero heap allocations.
 The convenience API, including scratch construction/destruction, measured about 1.2 µs on the tiny input.
 
-The 10% target is met for the tiny expression and flat assignments, but not for general modules. On the six tested
-standard-library modules, accepted-input overhead remains roughly 37–44% of Ruff parsing plus destruction, despite
-substantial improvement over the previous binary. Further work needs to reduce lexical work on general Python;
-combining structural bookkeeping alone cannot achieve the target when lexing dominates.
+The 10% target is met for the tiny expression and flat assignments, but not for general modules.
+On the six tested standard-library modules, accepted-input overhead remains roughly 37–44% of Ruff parsing plus
+destruction, despite substantial improvement over the previous binary.
+Further work needs to reduce lexical work on general Python; combining structural bookkeeping alone cannot achieve the
+target when lexing dominates.
 
 Verification included the debug and release test suites, Clippy with warnings denied, and exact result comparisons
 against the committed `05b7e0e` checker on all 83 retained corpus cases, 2,051 UTF-8 standard-library files under the
 source cap (including malformed fixtures), and 195 generated cases (39 families at depths 1, 10, 80, 101, and 300).
-All outcomes, rejection reasons, and byte ranges matched. Permanent differential tests compare the combined pass
-with frozen independent-pass rules and compare the prefix path against detailed scanning across varied budgets.
+All outcomes, rejection reasons, and byte ranges matched.
+Permanent differential tests compare the combined pass with frozen independent-pass rules and compare the prefix path
+against detailed scanning across varied budgets.
 These checks preserve observed behavior; they do not establish the outstanding parser safety guarantees.
 
 To compare future changes, preserve the previous release benchmark binary before rebuilding, then run:
@@ -385,6 +399,63 @@ Reproduce the experiment by adding `--byte-guard` to `tools/benchmark.py`.
 The benchmark executable also accepts `--guard` for timed guard/fallback checking and `--guard-probe` to report
 `proved` or `fallback` without timing; positive probe results are asserted against the normal checker.
 
+### Statement-level fallback experiment (2026-10-24)
+
+Committed the whole-file prototype as `874fd61` before starting this experiment.
+The `experimental-regions` feature adds the opt-in `Checker::check_regions` method; normal `Checker::check` remains
+selected by default. The experimental implementation lives in `src/lexer/region.rs` and uses the existing lexer
+context stack and ordinary-literal scanner, adding no scratch allocations.
+
+At logical statement boundaries, the guard attempts a complete region ending in a root newline. It counts tokens
+exactly, validates matching delimiters, and overcounts possible frame additions against the remaining parser and AST
+budgets. Layout changes are emitted by the detailed lexer before another proof is attempted. Optional token-size
+limits are checked on the same ranges as the detailed lexer. A source-byte upper bound eliminates per-token count
+comparisons when the entire remaining source already fits the remaining token budget.
+
+Successful proofs clear the current indentation level's elif run only when real code was present; comments and blank
+lines preserve it. Pending lambdas, leading elif/else clauses, semicolons, interpolated strings, and inconclusive
+annotation/depth bounds use detailed scanning locally. Failed proofs restore the lexer's position, contexts and stop
+flag before scanning the same statement normally. Subsequent statements can still take the fast path. The existing
+simple-prefix optimization remains first, preserving its advantage on flat assignments.
+
+The final release comparison uses a separately built, feature-disabled normal benchmark as the baseline. Seven-sample
+medians exclude checker construction and include per-input reset. This avoids overstating gains: enabling the feature
+also made the ordinary method slower in the measured binary (for example, 184 µs on `shutil.py`, versus 159 µs without
+the feature), although it preserved its results. Build-dependent timing differences warrant care before making the
+experimental path a default.
+
+| Input | Normal, feature disabled | Region proofs with local fallback | Regions / Ruff parse and drop |
+| --- | ---: | ---: | ---: |
+| tiny | 0.03 µs | 0.04 µs | 6.7% |
+| chain-80 | 1.65 µs | 0.52 µs | 6.5% |
+| flat-60k | 133.85 µs | 128.92 µs | 9.4% |
+| shutil | 159.41 µs | 135.06 µs | 33.0% |
+| chain-5000 | 2.01 µs | 2.78 µs | 0.6% |
+| ast.py | 69.19 µs | 59.14 µs | 34.4% |
+| dataclasses.py | 168.32 µs | 150.21 µs | 40.6% |
+| functools.py | 117.80 µs | 99.22 µs | 33.1% |
+| json/decoder.py | 31.28 µs | 22.69 µs | 27.5% |
+| re/__init__.py | 30.58 µs | 23.85 µs | 34.3% |
+
+The general modules improve by roughly 11–27% relative to the feature-disabled baseline, while the early-rejection
+case becomes slower. The broad-module overhead remains 28–41% of Ruff parsing plus AST destruction. The 10% goal is
+still met only on the tiny expression, the 80-addition case, and flat assignments in this sample. The region approach
+avoids whole-file rescanning, but still performs substantial independent lexical work and some local rescanning.
+It remains opt-in; further work should profile the proof loop and detailed fallback distribution before adding more
+lexical machinery. Sharing tokenization with the downstream parser remains the alternative if this cannot approach
+10% on representative modules.
+
+Verification covers exact results, reasons, and ranges on the 83-case retained corpus snapshot used in this experiment
+and 2,051 UTF-8 standard-library files under the source cap. Feature tests compare 48,000 mixed-statement cases across budgets, 20,000 malformed Unicode
+sources, 975 generated family/size/configuration combinations, and quoted-annotation fallback configurations.
+Allocation tests cover successful proofs and fallback after failures. Default and feature-enabled tests, release tests,
+and Clippy checks pass. Native annotation recursion and the other safety gaps documented in `SAFETY.md` remain.
+
+To reproduce, first save a release benchmark built without the feature, then build with
+`cargo build --release --features experimental-regions --example benchmark` and pass `--regions` to
+`tools/benchmark.py`. Its `--baseline` option accepts the saved feature-disabled benchmark. The executable also accepts
+`--regions-probe`, which asserts full rejection equality against normal checking and prints the result without timing.
+
 ## Runtime-generated source
 
 The short outer source `eval('1+' * 1000000 + '1')` passed Spam, CPython parsing, and Ruff parsing.
@@ -406,11 +477,124 @@ Any integration must check source passed to `eval()` and `exec()` immediately be
 4. Extend invalid-source mutation around escaped newlines, CRLF, comments, Unicode identifiers, triple quotes, and exact
    token boundaries.
    Minimize the one mixed-source `MemoryError` and test whether it is stable across versions.
-5. Probe strings in less common annotation forms and qualified names to measure the annotation heuristic's remaining
+
+## Source-guided hypotheses
+
+A read-only review of CPython 3.14 and the pinned `ruff_python_parser` 0.0.14 found several paths that the generated
+campaigns have not isolated yet.
+
+Ruff guards its normal recursive statement, expression, and pattern parsing with `stacker::maybe_grow` after 20 nested
+operations.
+Other recursive work remains outside that guard:
+
+- malformed-pattern recovery converts nested `Pattern` values into expressions recursively;
+- assignment and deletion target validation recursively walks tuple, list, and starred targets;
+- expression-context rewriting recursively walks assignment targets;
+- AST visitors recurse through expressions, statements, and patterns;
+- IPython help-expression reconstruction recursively walks attributes and subscripts;
+- ordinary Rust destruction recursively drops boxed AST chains.
+
+The recovery conversion is used for invalid mapping keys, invalid class patterns, and malformed complex-number patterns.
+These deserve late-failing nested and mixed-pattern cases, with parsing and AST destruction observed independently.
+
+Ruff also retains all emitted tokens, including trivia, together with its AST and a vector of parse errors.
+It suppresses duplicate errors at one source location but can retain errors at every distinct location.
+Long malformed parameter, argument, import, and pattern lists may therefore amplify memory through tokens, AST recovery
+nodes, error values, and allocated error strings.
+
+Large literals remain a separate single-token surface.
+Ruff removes underscores before converting an integer and then constructs an arbitrary-precision value.
+A near-limit decimal integer may be substantially more expensive than the hexadecimal inputs already sampled.
+Many unique non-ASCII identifiers may also amplify normalization, interning, hashing, and retained-name memory; repeated
+copies of one identifier do not exercise the same path.
+
+CPython's PEG parser runs invalid source in two passes.
+The first excludes specialized `invalid_*` rules; after failure it clears memo entries, rewinds, and runs again with
+those rules enabled.
+Long valid prefixes with a final error can therefore repeat token and grammar work.
+Memoized expression, block, pattern, type-parameter, string, and argument rules are promising places to combine delayed
+failure with memo-table pressure.
+
+CPython parsing is not the final source-processing stage.
+AST preprocessing, symbol-table construction, code generation, control-flow optimization, assembly, and object cleanup
+can recurse or allocate after `ast.parse` succeeds.
+CPython's own `ast` and `compile` documentation warns that a sufficiently large or complex source can crash during AST
+compilation.
+
+Python 3.14 template strings are comparatively underexplored.
+Alternating nested f-strings and t-strings, debug fields, conversions, comments, reused quotes, nested format
+specifications, and missing final braces exercise lexer state transitions as well as recursive parser paths.
+
+The next source-guided probes should test:
+
+1. Near-limit decimal integers, with and without underscores.
+2. Many distinct recoverable errors in parameter, argument, import, and pattern lists.
+3. Invalid nested mapping and class patterns that force recovery conversion.
+4. Type parameters and argument lists with a long valid prefix and one final invalid token.
+5. Many unique identifiers with NFKC expansion.
+6. Alternating f-string and t-string nesting, including late malformed format specifications.
+7. Successful parse followed separately by AST traversal, destruction, and compilation.
+8. Probe strings in less common annotation forms and qualified names to measure the annotation heuristic's remaining
    false positives and blind spots.
    Preserve the zero-rejection result on the 654-file standard-library sample.
-6. Run Monty compilation for new retained parser failures and exercise every dynamic parser entry point.
+9. Run Monty compilation for new retained parser failures and exercise every dynamic parser entry point.
    The SQLite corpus currently records Monty only for the initial deep power and lambda cases.
+
+### Late invalid call arguments
+
+The CPython two-pass hypothesis produced a reproducible parser-budget failure that Spam accepts with its default limits.
+The compact form is:
+
+```python
+f(x,x,x, ... 49,000 arguments ...,x,if)
+```
+
+The source is 98,006 bytes and about 98,000 tokens.
+It remains below Spam's 1 MiB source and 100,000-token defaults, has no deep nesting, and was accepted by the release
+checker.
+The final `if` makes an otherwise valid call invalid only after the parser has consumed the long argument prefix.
+
+Single isolated parse measurements on macOS arm64 were:
+
+| Parser | Valid repeated `x` | Final invalid `if` | Invalid child peak RSS |
+| --- | ---: | ---: | ---: |
+| CPython 3.14 | 136 ms | 254 ms | 176 MB |
+| CPython 3.15 | 181 ms | 242 ms | 177 MB |
+| Ruff 0.0.14 | 19 ms wall | 40 ms wall | 12 MB |
+
+`resource.getrusage(RUSAGE_CHILDREN)` reports whole-child peak RSS, including interpreter startup; it is not an
+incremental parser-allocation measurement.
+The CPython timings are measured inside `ast.parse`, while the Ruff values include subprocess startup.
+Repeated literal `0` arguments remove identifier handling and still take 210 ms with 130 MB peak RSS on CPython 3.14.
+This isolates the long argument list and late failure as the important shape.
+
+With distinct argument names, CPython 3.14 crossed the proposed 100 ms parse budget between 20,000 and 30,000 arguments:
+
+| Arguments | Source | Valid parse | Final invalid `if` | Invalid child peak RSS |
+| ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 59 KB | 13 ms | 34 ms | 51 MB |
+| 20,000 | 129 KB | 29 ms | 76 ms | 90 MB |
+| 30,000 | 199 KB | 44 ms | 128 ms | 116 MB |
+| 40,000 | 269 KB | 55 ms | 172 ms | 155 MB |
+| 49,000 | 332 KB | 68 ms | 216 ms | 183 MB |
+
+The late invalid token roughly doubles or triples parse time and substantially raises peak memory.
+This is consistent with CPython discarding first-pass memoization and reparsing with invalid-syntax rules, although the
+probe does not attribute individual allocations.
+No tested process crashed or timed out under the 500 ms discovery timeout.
+
+This is a concrete accepted input that exceeds a 100 ms parser target and is a likely 64 MiB incremental-memory
+violation at larger sizes.
+Any permanent regression case should record the implementation, version, source generator, timeout, and resource
+threshold rather than checking only for a crash.
+
+The same campaign found no Ruff failure in the sampled ranges.
+Near-limit decimal literals parsed in roughly 13 ms at 1 MiB, and nested malformed mapping/class patterns plus recursive
+assignment and deletion targets remained below roughly 15 ms through depth 20,000.
+Spam rejected those deep recursive forms near its nesting limit, before Ruff saw them.
+Twenty-four thousand unique NFKC identifiers stayed below 100 ms in CPython; 30,000 crossed 100 ms but Spam rejected
+that case on token count.
+Large flat template-string campaigns were also rejected on token count before reaching the parser budget.
 
 Keep generated campaigns bounded by the subprocess timeout and 1 MiB source cap.
 Import reproducible failures and representative conservative rejections into SQLite; add negative results and new

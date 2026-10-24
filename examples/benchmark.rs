@@ -25,9 +25,39 @@ fn main() {
         return;
     }
 
+    #[cfg(feature = "experimental-regions")]
+    if std::env::args().any(|arg| arg == "--regions-probe") {
+        let mut checker = Checker::new(limits.clone());
+        let result = checker.check_regions(&source);
+        assert_eq!(
+            result,
+            check(&source, &limits),
+            "region fallback changed screening"
+        );
+        match result {
+            Ok(()) => println!("accept"),
+            Err(error) => println!(
+                "reject:{:?}:{}:{}",
+                error.reason, error.range.start, error.range.end
+            ),
+        }
+        return;
+    }
+
     let result = check(&source, &limits);
     let status = if result.is_ok() { "accept" } else { "reject" };
-    let ns = if std::env::args().any(|arg| arg == "--guard") {
+    let ns = if std::env::args().any(|arg| arg == "--regions") {
+        #[cfg(feature = "experimental-regions")]
+        {
+            let mut checker = Checker::new(limits);
+            assert_eq!(checker.check_regions(&source), result);
+            bench_util::median_ns(|| {
+                let _ = black_box(checker.check_regions(black_box(&source)));
+            })
+        }
+        #[cfg(not(feature = "experimental-regions"))]
+        panic!("rebuild with --features experimental-regions");
+    } else if std::env::args().any(|arg| arg == "--guard") {
         let mut guard = byte_guard::ByteGuard::new(limits.clone());
         let mut checker = Checker::new(limits);
         let proved = guard.proves_acceptance(&source);

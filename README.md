@@ -40,9 +40,10 @@ The optional AST check counts long binary, attribute, call, and subscript chains
 but later destroy recursively.
 Its depth estimate is conservative.
 
-A shared structural pass maintains separate parser and AST depth estimates. A conservative fast path scans a prefix
-of short, unindented simple lines without constructing tokens. It counts tokens exactly and uses line byte length as
-a depth upper bound; complex syntax or insufficient budgets falls back to detailed scanning.
+A shared structural pass maintains separate parser and AST depth estimates.
+A conservative fast path scans a prefix of short, unindented simple lines without constructing tokens.
+It counts tokens exactly and uses line byte length as a depth upper bound; complex syntax or insufficient budgets falls
+back to detailed scanning.
 
 The lexer handles comments, strings, f-strings, template strings, indentation, and explicit line continuations.
 It retains bounded stacks and scans without storing a token list.
@@ -89,6 +90,39 @@ Cases receive `parser-failure` or `conservative-rejection` labels.
 Import keeps the shortest source per family and observed outcome within each campaign, deduplicates by SHA-256, and
 records results from every available implementation.
 Run `python3 tools/case_db.py list` to inspect retained cases.
+
+Resource campaigns use `resource-summary.json` and `resource-results.jsonl`.
+Import them with:
+
+```sh
+python3 tools/case_db.py import-resource /path/to/campaign
+```
+
+Each retained resource case stores the exact source and an optional generator recipe.
+Phase-specific observations record the outcome, parser status, raw timing samples, median, process memory, baseline
+memory, and the time or memory threshold used to classify the result.
+The `resource-failure` and `resource-control` labels distinguish threshold crossings from nearby controls;
+`parser-resource`, `compiler-resource`, and `downstream-checker` identify the measured phase or subsystem.
+Pyrefly checker findings use `downstream-checker` because they do not establish parser cost.
+
+`tools/calibrate.py` measures valid local corpora before construct limits are chosen.
+It records source and token sizes, AST and statement counts, identifier counts, maximum construct widths, Spam outcome,
+CPython parse and compile samples, and optional Ruff wall time.
+For example:
+
+```sh
+python3 tools/calibrate.py \
+  --stdlib \
+  --root /path/to/project --root-name project \
+  --spam-probe target/release/examples/probe \
+  --ruff-probe tools/ruff-probe/target/release/spam-ruff-probe \
+  --database corpus/cases.sqlite \
+  --output /tmp/spam-calibration.json
+```
+
+Calibration observations are stored separately from adversarial cases.
+The checked-in CPython 3.14, Monty, and Pydantic results are summarized in
+`campaigns/2026-10-24-calibration/SUMMARY.md`.
 
 See the [parser attack plan](ATTACK_PLAN.md) for campaign budgets, attack families, and success criteria.
 The [exploration log](EXPLORATION.md) records tested shapes, negative results, run conditions, and next experiments.
@@ -163,5 +197,25 @@ from accepted-input overhead.
 The measured results and machine details are in [the exploration log](EXPLORATION.md#performance).
 
 `tools/benchmark.py --byte-guard` also measures an experimental acceptance-only byte guard plus fallback to the normal
-checker. This prototype is confined to benchmarks and tests; it is not enabled in the library because late fallback
-can increase total screening time. Its coverage, results, and limitations are recorded in the exploration log.
+checker.
+This prototype is confined to benchmarks and tests; it is not enabled in the library because late fallback can increase
+total screening time.
+Its coverage, results, and limitations are recorded in the exploration log.
+
+The `experimental-regions` feature exposes `Checker::check_regions`, which attempts bounded statement proofs and resumes
+detailed scanning locally when a proof fails.
+It shares existing scratch storage and performs no allocations per input.
+The normal `Checker::check` path remains unchanged; enabling the feature does not select the experimental method
+automatically.
+
+```sh
+cargo build --release --features experimental-regions --example benchmark
+python3 tools/benchmark.py \
+  --spam-bench target/release/examples/benchmark \
+  --ruff-probe tools/ruff-probe/target/release/spam-ruff-probe \
+  --regions --stdlib-file json/decoder.py --stdlib-file re/__init__.py \
+  --output /tmp/spam-region-benchmark.json
+```
+
+Use `cargo test --features experimental-regions` to include the region differential and allocation checks.
+The experiment reduces overhead on the tested general modules, but does not meet the 10% target there.

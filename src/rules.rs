@@ -91,6 +91,39 @@ impl Scanner {
         self.total = 0;
     }
 
+    #[cfg(feature = "experimental-regions")]
+    pub(super) fn region_budget(&self) -> Option<usize> {
+        // Called only after a logical newline/layout token. These boundaries
+        // release local frames; only unfinished lambda parameters can survive.
+        debug_assert!(self.statement_start && self.levels.len() == 1);
+        let top = &self.levels[0];
+        debug_assert!(
+            top.tight == 0 && top.loose == 0 && top.ast_loose == 0 && top.binary_depth == 0
+        );
+        if top.pending_lambdas != 0 {
+            return None;
+        }
+        let remaining = self.limit.saturating_sub(self.total);
+        Some(
+            remaining.min(
+                self.ast_limit
+                    .map_or(remaining, |limit| limit.saturating_sub(self.ast_total)),
+            ) as usize,
+        )
+    }
+
+    #[cfg(feature = "experimental-regions")]
+    pub(super) fn finish_region(&mut self, seen_code: bool) {
+        // First-token elif/else and pending lambdas are excluded by the proof.
+        // A normal first token clears this indent's branch run, then newline
+        // leaves all local counters empty while ancestor runs remain retained.
+        if seen_code && self.ast_limit.is_some() {
+            self.observe_statement_start(Kind::Name);
+        }
+        self.prev_ends_operand = false;
+        self.statement_start = true;
+    }
+
     /// Updates both estimates, preserving parser rejection priority on a token.
     #[inline]
     pub(super) fn observe(&mut self, kind: Kind) -> Option<Reason> {

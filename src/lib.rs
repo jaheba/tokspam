@@ -112,9 +112,20 @@ impl Checker {
         Self { limits, scratch }
     }
 
+    /// Experimental statement-level proofs with local detailed fallback.
+    /// Returns the same rejection reasons and ranges as normal screening.
+    #[cfg(feature = "experimental-regions")]
+    pub fn check_regions(&mut self, source: &str) -> Result<(), Rejection> {
+        self.check_mode::<true>(source)
+    }
+
     /// Rejects source that exceeds the configured structural budgets.
     /// Successful screening does not validate Python syntax.
     pub fn check(&mut self, source: &str) -> Result<(), Rejection> {
+        self.check_mode::<false>(source)
+    }
+
+    fn check_mode<const REGIONS: bool>(&mut self, source: &str) -> Result<(), Rejection> {
         if source.len() > self.limits.max_source_bytes {
             return Err(Rejection {
                 reason: Reason::SourceSize,
@@ -122,7 +133,7 @@ impl Checker {
             });
         }
 
-        scan::<true>(
+        scan::<true, REGIONS>(
             source,
             &self.limits,
             u32::from(self.limits.max_nesting_depth),
@@ -157,7 +168,7 @@ impl ScanScratch {
     }
 }
 
-fn scan<const FAST: bool>(
+fn scan<const FAST: bool, const REGIONS: bool>(
     source: &str,
     limits: &Limits,
     budget: u32,
@@ -202,7 +213,34 @@ fn scan<const FAST: bool>(
         }
     }
 
-    for token in lexer {
+    #[cfg(feature = "experimental-regions")]
+    let mut region_start = true;
+    // The region proof must run before next(); without the feature this same
+    // loop becomes the ordinary token loop.
+    #[cfg_attr(not(feature = "experimental-regions"), allow(clippy::while_let_loop))]
+    loop {
+        #[cfg(feature = "experimental-regions")]
+        if REGIONS && region_start && annotations.region_ready() {
+            if let Some(remaining) = scanner.region_budget() {
+                if let Some((count, seen_code)) = lexer.skip_region(
+                    remaining,
+                    limits.max_tokens.saturating_sub(token_count),
+                    limits.max_token_bytes,
+                    limits.check_string_annotations,
+                    annotation_source,
+                ) {
+                    token_count += count;
+                    scanner.finish_region(seen_code);
+                    annotations.reset();
+                    continue;
+                }
+            }
+        }
+        let Some(token) = lexer.next() else { break };
+        #[cfg(feature = "experimental-regions")]
+        {
+            region_start = matches!(token.kind, Kind::Newline | Kind::Indent | Kind::Dedent);
+        }
         token_count += 1;
         if token_count > limits.max_tokens {
             return Err(Rejection {
@@ -241,7 +279,7 @@ fn scan<const FAST: bool>(
                 let minimum = remaining.min(ast_remaining.unwrap_or(remaining));
                 if contents.len() > minimum as usize
                     && (string_depth >= limits.max_annotation_depth
-                        || scan::<FAST>(
+                        || scan::<FAST, REGIONS>(
                             &source[contents],
                             limits,
                             remaining,
@@ -281,6 +319,12 @@ struct AnnotationTracker {
 }
 
 impl AnnotationTracker {
+    #[cfg(feature = "experimental-regions")]
+    fn region_ready(&self) -> bool {
+        debug_assert!(self.brackets.is_empty() && !self.active());
+        self.pending_lambdas == 0
+    }
+
     fn reset(&mut self) {
         self.brackets.clear();
         self.start_depth = None;
@@ -529,7 +573,7 @@ mod fast_path_tests {
                             source.push_str(lines[(random >> 32) as usize % lines.len()]);
                         }
                         let actual = checker.check(&source);
-                        let expected = scan::<false>(
+                        let expected = scan::<false, false>(
                             &source,
                             &limits,
                             u32::from(depth),
