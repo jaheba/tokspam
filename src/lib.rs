@@ -74,6 +74,8 @@ impl Default for Limits {
 
 /// Rejects source that exceeds the configured structural budgets.
 /// Successful screening does not validate Python syntax.
+/// Scratch allocations depend only on `limits` and finish before token scanning.
+/// Oversized source is rejected before allocating scratch memory.
 pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
     if source.len() > limits.max_source_bytes {
         return Err(Rejection {
@@ -81,6 +83,16 @@ pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
             range: 0..source.len(),
         });
     }
+
+    let annotation_depth = if limits.check_string_annotations {
+        limits.max_annotation_depth
+    } else {
+        0
+    };
+    let mut scratch: Vec<_> = (0..=annotation_depth)
+        .map(|_| ScanScratch::new(limits))
+        .collect();
+
     scan(
         source,
         limits,
@@ -88,26 +100,67 @@ pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
         limits.max_ast_depth.map(u32::from),
         0,
         false,
+        &mut scratch,
     )
 }
 
-fn scan(
-    source: &str,
+// Allocate every annotation frame before inspecting tokens. Reusing these frames
+// keeps both allocation count and capacity independent of the source structure.
+struct ScanScratch<'a> {
+    lexer: Lexer<'a>,
+    scanner: Scanner,
+    ast: Option<Scanner>,
+    annotations: AnnotationTracker,
+}
+
+impl ScanScratch<'_> {
+    fn new(limits: &Limits) -> Self {
+        let budget = u32::from(limits.max_nesting_depth);
+
+        Self {
+            lexer: Lexer::new(
+                "",
+                budget as usize,
+                usize::from(limits.max_indentation_depth),
+            ),
+            scanner: Scanner::new(budget, false),
+            ast: limits
+                .max_ast_depth
+                .map(|budget| Scanner::new(u32::from(budget), true)),
+            annotations: AnnotationTracker {
+                brackets: Vec::with_capacity(budget as usize),
+                ..AnnotationTracker::default()
+            },
+        }
+    }
+}
+
+fn scan<'a>(
+    source: &'a str,
     limits: &Limits,
     budget: u32,
     ast_budget: Option<u32>,
     string_depth: u8,
     annotation_source: bool,
+    scratch: &mut [ScanScratch<'a>],
 ) -> Result<(), Rejection> {
-    let mut scanner = Scanner::new(budget, false);
-    let mut ast = ast_budget.map(|budget| Scanner::new(budget, true));
-    let mut annotations = AnnotationTracker::default();
+    let (frame, remaining_scratch) = scratch.split_first_mut().expect("annotation depth checked");
+    let ScanScratch {
+        lexer,
+        scanner,
+        ast,
+        annotations,
+    } = frame;
+
+    lexer.reset(source, budget as usize);
+    scanner.reset(budget);
+    if let Some(ast) = ast {
+        ast.reset(ast_budget.expect("AST budget matches scratch"));
+    }
+    annotations.reset();
+
     let mut token_count = 0;
-    for token in Lexer::new(
-        source,
-        budget as usize,
-        usize::from(limits.max_indentation_depth),
-    ) {
+    for token in lexer.by_ref() {
         token_count += 1;
         if token_count > limits.max_tokens {
             return Err(Rejection {
@@ -155,6 +208,7 @@ fn scan(
                             ast_remaining,
                             string_depth + 1,
                             true,
+                            remaining_scratch,
                         )
                         .is_err())
                 {
@@ -196,6 +250,15 @@ struct AnnotationTracker {
 }
 
 impl AnnotationTracker {
+    fn reset(&mut self) {
+        self.brackets.clear();
+        self.start_depth = None;
+        self.line_started = false;
+        self.block_header = false;
+        self.pending_lambdas = 0;
+        self.previous = None;
+    }
+
     fn active(&self) -> bool {
         self.start_depth.is_some()
     }

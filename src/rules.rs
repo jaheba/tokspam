@@ -35,7 +35,9 @@ struct Level {
     /// `lambda` keywords whose `:` has not arrived, so commas are still
     /// separating parameters rather than ending a body.
     pending_lambdas: u32,
-    binary_stack: Vec<(u8, u32)>,
+    // Strictly increasing precedences in 1..=6 need at most six entries.
+    binary_stack: [(u8, u32); 6],
+    binary_len: usize,
     binary_depth: u32,
 }
 
@@ -54,16 +56,32 @@ enum LevelKind {
 
 impl Scanner {
     pub(super) fn new(limit: u32, ast: bool) -> Self {
-        Self {
+        // Include the root and one overflowing entry: observe reports the
+        // rejection after pushing the token that exceeds the budget.
+        let mut scanner = Self {
             limit,
-            levels: vec![Level::new(LevelKind::Top)],
+            levels: Vec::with_capacity(limit as usize + 2),
             indent: 0,
             prev_ends_operand: false,
             statement_start: true,
-            elif_runs: vec![0],
+            elif_runs: Vec::with_capacity(limit as usize + 2),
             total: 0,
             ast,
-        }
+        };
+        scanner.reset(limit);
+        scanner
+    }
+
+    pub(super) fn reset(&mut self, limit: u32) {
+        self.limit = limit;
+        self.levels.clear();
+        self.levels.push(Level::new(LevelKind::Top));
+        self.elif_runs.clear();
+        self.elif_runs.push(0);
+        self.indent = 0;
+        self.prev_ends_operand = false;
+        self.statement_start = true;
+        self.total = 0;
     }
 
     /// Accounts for one token, returning whether the estimate now exceeds the limit.
@@ -277,24 +295,24 @@ impl Scanner {
         top.tight = 0;
         top.loose = 0;
         top.binary_depth = 0;
-        top.binary_stack.clear();
+        top.binary_len = 0;
         self.total -= released;
     }
 
     fn observe_binary(&mut self, precedence: u8) -> bool {
         let level = self.top();
         let mut current = 0;
-        while level
-            .binary_stack
+        while level.binary_stack[..level.binary_len]
             .last()
             .is_some_and(|(p, _)| *p >= precedence)
         {
-            let (_, left) = level.binary_stack.pop().unwrap();
+            level.binary_len -= 1;
+            let (_, left) = level.binary_stack[level.binary_len];
             current = left.max(current) + 1;
         }
-        level.binary_stack.push((precedence, current));
-        let depth = level
-            .binary_stack
+        level.binary_stack[level.binary_len] = (precedence, current);
+        level.binary_len += 1;
+        let depth = level.binary_stack[..level.binary_len]
             .iter()
             .rev()
             .fold(0u32, |right, (_, left)| left.max(&right) + 1);
@@ -321,7 +339,8 @@ impl Level {
             tight: 0,
             loose: 0,
             pending_lambdas: 0,
-            binary_stack: Vec::new(),
+            binary_stack: [(0, 0); 6],
+            binary_len: 0,
             binary_depth: 0,
         }
     }

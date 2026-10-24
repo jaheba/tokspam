@@ -29,6 +29,9 @@ Its depth estimate is conservative.
 
 The lexer handles comments, strings, f-strings, template strings, indentation, and explicit line continuations.
 It retains bounded stacks and scans without storing a token list.
+Scratch storage is allocated before token scanning, with allocation count and sizes determined only by `Limits`.
+Input cannot trigger further heap allocations, including while scanning nested quoted annotations.
+Source exceeding the byte limit is rejected before allocating scratch storage.
 String contents are screened only at likely annotation positions, including variable, parameter, and return annotations.
 This is a lexical heuristic, not a Python grammar check.
 Escaped and concatenated annotations are not decoded.

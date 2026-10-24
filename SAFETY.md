@@ -37,6 +37,12 @@ For accepted configuration, one call to `check` must have these bounds:
 - Ordinary scanning is linear in source bytes and emitted tokens.
 - Annotation contents are charged to one shared byte and token budget when scanned as Python source.
 
+The current implementation preallocates scratch storage for every permitted annotation depth before token scanning.
+Its heap allocation count and sizes depend only on `Limits`; scanning does not grow those allocations.
+Oversized source is rejected before this allocation step.
+The allocation regression test covers accepted and rejected input under several configurations.
+The remaining ceilings, shared work budgets, and no-recursion requirements above are still outstanding.
+
 The source string is owned by the caller and is not counted as Spam working memory.
 
 ## Malformed input

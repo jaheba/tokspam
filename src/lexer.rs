@@ -92,17 +92,32 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a str, limit: usize, indentation_limit: usize) -> Self {
-        Self {
+        let mut lexer = Self {
             source,
             position: 0,
-            contexts: vec![Context::Root],
-            indents: vec![0],
+            contexts: Vec::with_capacity(limit + 1),
+            indents: Vec::with_capacity(indentation_limit + 1),
             line_start: true,
             pending_indent: None,
             limit,
             indentation_limit,
             stopped: false,
-        }
+        };
+        lexer.reset(source, limit);
+        lexer
+    }
+
+    pub(super) fn reset(&mut self, source: &'a str, limit: usize) {
+        self.source = source;
+        self.position = 0;
+        self.contexts.clear();
+        self.contexts.push(Context::Root);
+        self.indents.clear();
+        self.indents.push(0);
+        self.line_start = true;
+        self.pending_indent = None;
+        self.limit = limit;
+        self.stopped = false;
     }
 
     fn token(&self, kind: Kind, start: usize) -> Token {
