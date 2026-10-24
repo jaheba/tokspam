@@ -2,6 +2,7 @@
 use std::ops::Range;
 
 #[cfg(feature = "experimental-regions")]
+#[path = "lexer/region.rs"]
 mod region;
 
 const NAME_BYTE: u8 = 1;
@@ -377,6 +378,72 @@ impl<'a, 's> Lexer<'a, 's> {
         self.token(Kind::Limit, start)
     }
 
+    // Keep text handling out of the ordinary token dispatch loop.
+    #[inline(never)]
+    fn text_token(&mut self, context: Context) -> Option<Token> {
+        let bytes = self.source.as_bytes();
+        let start = self.position;
+        let byte = bytes[start];
+
+        // Literal text has no structural effect until an ASCII delimiter.
+        // Stopping only at ASCII or EOF also preserves UTF-8 boundaries.
+        let text_run = match context {
+            Context::Text { quote, .. } => bytes[start..]
+                .iter()
+                .position(|&b| b == quote || matches!(b, b'{' | b'}' | b'\\')),
+            Context::Format => bytes[start..]
+                .iter()
+                .position(|&b| matches!(b, b'{' | b'}' | b'\\')),
+            _ => Some(0),
+        }
+        .unwrap_or(bytes.len() - start);
+        if text_run != 0 {
+            self.position += text_run;
+            return None;
+        }
+
+        if let Context::Text { quote, width } = context {
+            if byte == quote && (width == 1 || bytes.get(start..start + 3) == Some(&[quote; 3])) {
+                self.position += width;
+                self.contexts.pop();
+                return Some(self.token(Kind::FStringEnd, start));
+            }
+        }
+        if byte == b'{' {
+            if matches!(context, Context::Text { .. }) && bytes.get(start + 1) == Some(&b'{') {
+                self.position += 2;
+                return None;
+            }
+            self.position += 1;
+            let kind = if self.push(Context::Field) {
+                Kind::Lbrace
+            } else {
+                Kind::NestingLimit
+            };
+            return Some(self.token(kind, start));
+        }
+        if byte == b'}' && matches!(context, Context::Format) {
+            self.position += 1;
+            self.contexts.pop();
+            return Some(self.token(Kind::Rbrace, start));
+        }
+        if byte == b'}' && bytes.get(start + 1) == Some(&b'}') {
+            self.position += 2;
+            return None;
+        }
+        // Backslashes cannot hide replacement-field braces, including \N{...}.
+        if byte == b'\\'
+            && bytes
+                .get(start + 1)
+                .is_some_and(|b| matches!(b, b'\\' | b'\'' | b'"'))
+        {
+            self.position += 2;
+        } else {
+            self.position += self.source[start..].chars().next().unwrap().len_utf8();
+        }
+        None
+    }
+
     fn indentation(&mut self) -> Option<Token> {
         let start = self.position;
         let column = if let Some(column) = self.pending_indent.take() {
@@ -445,54 +512,24 @@ impl Iterator for Lexer<'_, '_> {
             let byte = bytes[start];
             let context = *self.contexts.last().unwrap();
 
-            if let Context::Text { quote, width } = context {
-                if bytes.get(start..start + width) == Some(&[quote; 3][..width]) {
-                    self.position += width;
-                    self.contexts.pop();
-                    return Some(self.token(Kind::FStringEnd, start));
-                }
-            }
             if matches!(context, Context::Text { .. } | Context::Format) {
-                if byte == b'{' {
-                    if matches!(context, Context::Text { .. })
-                        && bytes.get(start + 1) == Some(&b'{')
-                    {
-                        self.position += 2;
-                        continue;
-                    }
-                    self.position += 1;
-                    let kind = if self.push(Context::Field) {
-                        Kind::Lbrace
-                    } else {
-                        Kind::NestingLimit
-                    };
-                    return Some(self.token(kind, start));
-                }
-                if byte == b'}' && matches!(context, Context::Format) {
-                    self.position += 1;
-                    self.contexts.pop();
-                    return Some(self.token(Kind::Rbrace, start));
-                }
-                if byte == b'}' && bytes.get(start + 1) == Some(&b'}') {
-                    self.position += 2;
-                    continue;
-                }
-                // Backslashes cannot hide replacement-field braces, including \N{...}.
-                if byte == b'\\'
-                    && bytes
-                        .get(start + 1)
-                        .is_some_and(|b| matches!(b, b'\\' | b'\'' | b'"'))
-                {
-                    self.position += 2;
-                } else {
-                    self.position += self.source[start..].chars().next().unwrap().len_utf8();
+                if let Some(token) = self.text_token(context) {
+                    return Some(token);
                 }
                 continue;
             }
 
             self.position += 1;
             let kind = match byte {
-                b' ' | b'\t' | 0x0c => continue,
+                b' ' | b'\t' | 0x0c => {
+                    while bytes
+                        .get(self.position)
+                        .is_some_and(|b| matches!(b, b' ' | b'\t' | 0x0c))
+                    {
+                        self.position += 1;
+                    }
+                    continue;
+                }
                 b'#' => {
                     while self.position < bytes.len()
                         && !matches!(bytes[self.position], b'\n' | b'\r')
@@ -647,5 +684,90 @@ impl Iterator for Lexer<'_, '_> {
             };
             return Some(self.token(kind, start));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokens(source: &str) -> Vec<Token> {
+        let mut scratch = LexerScratch::new(100, 100);
+        let tokens: Vec<_> = Lexer::new(source, 100, 100, &mut scratch).collect();
+        for token in &tokens {
+            assert!(source.is_char_boundary(token.range.start));
+            assert!(source.is_char_boundary(token.range.end));
+        }
+        tokens
+    }
+
+    #[test]
+    fn text_runs_preserve_fields_escapes_and_quote_boundaries() {
+        for prefix in ["f", "t"] {
+            for quote in ["\"", "'''", "\"\"\""] {
+                let source = format!("{prefix}{quote}🦀{{{{literal}}}}\\N{{value}}tail{quote}");
+                let result = tokens(&source);
+                assert_eq!(
+                    result.iter().map(|token| token.kind).collect::<Vec<_>>(),
+                    [
+                        Kind::FStringStart,
+                        Kind::Lbrace,
+                        Kind::Name,
+                        Kind::Rbrace,
+                        Kind::FStringEnd
+                    ]
+                );
+                assert_eq!(&source[result[2].range.clone()], "value");
+                assert_eq!(&source[result[4].range.clone()], quote);
+            }
+        }
+
+        let source = "f\"🦀\\\"text{x:🦀>{width}}tail\"";
+        assert_eq!(
+            tokens(source)
+                .iter()
+                .map(|token| token.kind)
+                .collect::<Vec<_>>(),
+            [
+                Kind::FStringStart,
+                Kind::Lbrace,
+                Kind::Name,
+                Kind::Colon,
+                Kind::Lbrace,
+                Kind::Name,
+                Kind::Rbrace,
+                Kind::Rbrace,
+                Kind::FStringEnd
+            ]
+        );
+
+        for source in ["f\"🦀text", "f'''🦀'text''", "f\"{x:🦀text"] {
+            let result = tokens(source);
+            let last = result.last().unwrap();
+            assert_eq!(last.kind, Kind::Limit);
+            assert_eq!(last.range, source.len()..source.len());
+        }
+    }
+
+    #[test]
+    fn whitespace_runs_preserve_indentation_and_token_ranges() {
+        let source = "if x:\n \t\x0c  y \t\x0c = 1\nz\n";
+        let result = tokens(source);
+        let indent = result
+            .iter()
+            .find(|token| token.kind == Kind::Indent)
+            .unwrap();
+        assert_eq!(indent.range, 6..source.find('y').unwrap());
+        let dedent = result
+            .iter()
+            .find(|token| token.kind == Kind::Dedent)
+            .unwrap();
+        let end = source.find('z').unwrap();
+        assert_eq!(dedent.range, end..end);
+        let equal = result
+            .iter()
+            .find(|token| token.kind == Kind::Equal)
+            .unwrap();
+        assert_eq!(&source[equal.range.clone()], "=");
     }
 }

@@ -1,0 +1,8 @@
+{
+  "seed": 20261024,
+  "random_cases": 1000,
+  "stdlib_files": 2054,
+  "total_cases": 3205,
+  "mismatches": 0,
+  "compared": "token kinds, source ranges, and string contents ranges"
+}

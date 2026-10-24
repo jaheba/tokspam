@@ -1,0 +1,45 @@
+Analysis of sampling spam-lexer-before (pid 45245) every 1 millisecond
+Process:         spam-lexer-before [45245]
+Path:            /private/tmp/spam-lexer-before
+Load Address:    0x104c64000
+Identifier:      spam-lexer-before
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  Python [45244]
+Target Type:     live task
+
+Date/Time:       2026-10-24 17:05:03.809 +0200
+Launch Time:     2026-10-24 17:05:03.741 +0200
+OS Version:      macOS 27.0 (26A428)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         1424K
+Physical footprint (peak):  1424K
+Idle exit:                  untracked
+----
+
+Call graph:
+    2232 Thread_34364375   DispatchQueue_1: com.apple.main-thread  (serial)
+      2232 start  (in dyld) + 6688  [0x19b783e80]
+        2232 main  (in spam-lexer-before) + 52  [0x104c68314]
+          2232 _RNvNtCs1SSuMAdGM58_3std2rt19lang_start_internal  (in spam-lexer-before) + 936  [0x104c809f0]
+            2232 _RNCINvNtCs1SSuMAdGM58_3std2rt10lang_startuE0CsgEc4HKoM1Nu_15lexer_benchmark  (in spam-lexer-before) + 16  [0x104c64ef8]
+              2232 _RINvNtNtCs1SSuMAdGM58_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsgEc4HKoM1Nu_15lexer_benchmark  (in spam-lexer-before) + 12  [0x104c64ee0]
+                2232 _RNvCsgEc4HKoM1Nu_15lexer_benchmark4main  (in spam-lexer-before) + 856  [0x104c675a8]
+                  1479 _RNCNvCsgEc4HKoM1Nu_15lexer_benchmark4main0B3_  (in spam-lexer-before) + 320,296,...  [0x104c66808,0x104c667f0,...]
+                  748 _RNCNvCsgEc4HKoM1Nu_15lexer_benchmark4main0B3_  (in spam-lexer-before) + 496  [0x104c668b8]
+                  + 594 _platform_memcmp  (in libsystem_platform.dylib) + 272,260,...  [0x19bb61280,0x19bb61274,...]
+                  + 154 DYLD-STUB$$memcmp  (in spam-lexer-before) + 4,0  [0x104ca2248,0x104ca2244]
+                  3 _RNCNvCsgEc4HKoM1Nu_15lexer_benchmark4main0B3_  (in spam-lexer-before) + 248  [0x104c667c0]
+                  + 3 _RNvMs_NtCsgEc4HKoM1Nu_15lexer_benchmark5lexerNtB4_5Lexer11indentation  (in spam-lexer-before) + 0,48,...  [0x104c65efc,0x104c65f2c,...]
+                  2 _RNCNvCsgEc4HKoM1Nu_15lexer_benchmark4main0B3_  (in spam-lexer-before) + 1308  [0x104c66be4]
+                    2 _RNvMs_NtCsgEc4HKoM1Nu_15lexer_benchmark5lexerNtB4_5Lexer6quoted  (in spam-lexer-before) + 140,596  [0x104c66114,0x104c662dc]
+
+Total number in stack (recursive counted multiple, when >=5):
+
+Sort by top of stack, same collapsed (when >= 5):
+        _RNCNvCsgEc4HKoM1Nu_15lexer_benchmark4main0B3_  (in spam-lexer-before)        1479
+        _platform_memcmp  (in libsystem_platform.dylib)        594
+        DYLD-STUB$$memcmp  (in spam-lexer-before)        154

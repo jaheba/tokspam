@@ -1,0 +1,347 @@
+{
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "python": "3.15.0 (main, Oct  9 2026, 11:16:41) [Clang 21.0.0 (clang-2100.3.34.2)]",
+  "results": [
+    {
+      "name": "shutil.py",
+      "bytes": 60689,
+      "tokens": 9081,
+      "baseline_samples": [
+        {
+          "tokens": 9081,
+          "lexer_ns": 124212.2,
+          "check_ns": 237780.3
+        },
+        {
+          "tokens": 9081,
+          "lexer_ns": 104375.7,
+          "check_ns": 237756.3
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 9081,
+          "lexer_ns": 105497.6,
+          "check_ns": 235570.5
+        },
+        {
+          "tokens": 9081,
+          "lexer_ns": 110955.2,
+          "check_ns": 235027.3
+        }
+      ],
+      "lexer_ns_ratio": 0.9469127630990092,
+      "check_ns_ratio": 0.9896142589234982
+    },
+    {
+      "name": "ast.py",
+      "bytes": 26585,
+      "tokens": 4044,
+      "baseline_samples": [
+        {
+          "tokens": 4044,
+          "lexer_ns": 39473.1,
+          "check_ns": 98171.1
+        },
+        {
+          "tokens": 4044,
+          "lexer_ns": 39093.6,
+          "check_ns": 97482.1
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 4044,
+          "lexer_ns": 38111.8,
+          "check_ns": 97159.4
+        },
+        {
+          "tokens": 4044,
+          "lexer_ns": 36743.9,
+          "check_ns": 97741.2
+        }
+      ],
+      "lexer_ns_ratio": 0.952766248296034,
+      "check_ns_ratio": 0.9961533979510684
+    },
+    {
+      "name": "dataclasses.py",
+      "bytes": 71471,
+      "tokens": 8107,
+      "baseline_samples": [
+        {
+          "tokens": 8107,
+          "lexer_ns": 114751.3,
+          "check_ns": 227188.1
+        },
+        {
+          "tokens": 8107,
+          "lexer_ns": 116202.8,
+          "check_ns": 223609.9
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 8107,
+          "lexer_ns": 115674.2,
+          "check_ns": 222409.5
+        },
+        {
+          "tokens": 8107,
+          "lexer_ns": 107462.1,
+          "check_ns": 219804.7
+        }
+      ],
+      "lexer_ns_ratio": 0.9661499839145526,
+      "check_ns_ratio": 0.9809586555397318
+    },
+    {
+      "name": "functools.py",
+      "bytes": 44739,
+      "tokens": 6538,
+      "baseline_samples": [
+        {
+          "tokens": 6538,
+          "lexer_ns": 75756.8,
+          "check_ns": 169859.4
+        },
+        {
+          "tokens": 6538,
+          "lexer_ns": 77629.1,
+          "check_ns": 168435.5
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 6538,
+          "lexer_ns": 70123.7,
+          "check_ns": 163467.8
+        },
+        {
+          "tokens": 6538,
+          "lexer_ns": 71361.0,
+          "check_ns": 166779.5
+        }
+      ],
+      "lexer_ns_ratio": 0.9224100781101783,
+      "check_ns_ratio": 0.9762112878438308
+    },
+    {
+      "name": "json/decoder.py",
+      "bytes": 13584,
+      "tokens": 2016,
+      "baseline_samples": [
+        {
+          "tokens": 2016,
+          "lexer_ns": 17850.2,
+          "check_ns": 45989.6
+        },
+        {
+          "tokens": 2016,
+          "lexer_ns": 18376.4,
+          "check_ns": 45765.3
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 2016,
+          "lexer_ns": 17063.0,
+          "check_ns": 45301.3
+        },
+        {
+          "tokens": 2016,
+          "lexer_ns": 17036.0,
+          "check_ns": 45242.7
+        }
+      ],
+      "lexer_ns_ratio": 0.9412696747693682,
+      "check_ns_ratio": 0.9868028846415833
+    },
+    {
+      "name": "re/__init__.py",
+      "bytes": 18511,
+      "tokens": 1782,
+      "baseline_samples": [
+        {
+          "tokens": 1782,
+          "lexer_ns": 18934.7,
+          "check_ns": 43289.3
+        },
+        {
+          "tokens": 1782,
+          "lexer_ns": 19192.5,
+          "check_ns": 44046.0
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 1782,
+          "lexer_ns": 17768.8,
+          "check_ns": 43349.6
+        },
+        {
+          "tokens": 1782,
+          "lexer_ns": 17984.2,
+          "check_ns": 43401.2
+        }
+      ],
+      "lexer_ns_ratio": 0.9377294949537339,
+      "check_ns_ratio": 0.9933074026195592
+    },
+    {
+      "name": "identifiers",
+      "bytes": 58000,
+      "tokens": 6001,
+      "baseline_samples": [
+        {
+          "tokens": 6001,
+          "lexer_ns": 49865.4,
+          "check_ns": 118372.4
+        },
+        {
+          "tokens": 6001,
+          "lexer_ns": 50193.3,
+          "check_ns": 117331.2
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 6001,
+          "lexer_ns": 50285.4,
+          "check_ns": 119900.2
+        },
+        {
+          "tokens": 6001,
+          "lexer_ns": 50365.6,
+          "check_ns": 118980.3
+        }
+      ],
+      "lexer_ns_ratio": 1.0059195252386848,
+      "check_ns_ratio": 1.013478368595134
+    },
+    {
+      "name": "comments",
+      "bytes": 80300,
+      "tokens": 100,
+      "baseline_samples": [
+        {
+          "tokens": 100,
+          "lexer_ns": 36779.4,
+          "check_ns": 36179.4
+        },
+        {
+          "tokens": 100,
+          "lexer_ns": 36642.7,
+          "check_ns": 36012.3
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 100,
+          "lexer_ns": 35561.6,
+          "check_ns": 36133.9
+        },
+        {
+          "tokens": 100,
+          "lexer_ns": 35508.3,
+          "check_ns": 35951.0
+        }
+      ],
+      "lexer_ns_ratio": 0.9679633243941537,
+      "check_ns_ratio": 0.9985206055543779
+    },
+    {
+      "name": "strings",
+      "bytes": 80700,
+      "tokens": 400,
+      "baseline_samples": [
+        {
+          "tokens": 400,
+          "lexer_ns": 58728.7,
+          "check_ns": 62192.8
+        },
+        {
+          "tokens": 400,
+          "lexer_ns": 58569.7,
+          "check_ns": 63257.9
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 400,
+          "lexer_ns": 58442.1,
+          "check_ns": 62818.8
+        },
+        {
+          "tokens": 400,
+          "lexer_ns": 57870.3,
+          "check_ns": 63302.3
+        }
+      ],
+      "lexer_ns_ratio": 0.9915940882399078,
+      "check_ns_ratio": 1.0053439319190725
+    },
+    {
+      "name": "fstrings",
+      "bytes": 82000,
+      "tokens": 1100,
+      "baseline_samples": [
+        {
+          "tokens": 1100,
+          "lexer_ns": 368666.0,
+          "check_ns": 404657.2
+        },
+        {
+          "tokens": 1100,
+          "lexer_ns": 360614.9,
+          "check_ns": 399926.8
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 1100,
+          "lexer_ns": 57989.0,
+          "check_ns": 74516.0
+        },
+        {
+          "tokens": 1100,
+          "lexer_ns": 58462.5,
+          "check_ns": 71195.6
+        }
+      ],
+      "lexer_ns_ratio": 0.15967989837660632,
+      "check_ns_ratio": 0.1811017867618546
+    },
+    {
+      "name": "spaces",
+      "bytes": 100500,
+      "tokens": 400,
+      "baseline_samples": [
+        {
+          "tokens": 400,
+          "lexer_ns": 145088.1,
+          "check_ns": 149575.7
+        },
+        {
+          "tokens": 400,
+          "lexer_ns": 146061.0,
+          "check_ns": 152221.7
+        }
+      ],
+      "optimized_samples": [
+        {
+          "tokens": 400,
+          "lexer_ns": 50186.9,
+          "check_ns": 54980.9
+        },
+        {
+          "tokens": 400,
+          "lexer_ns": 50292.0,
+          "check_ns": 55367.6
+        }
+      ],
+      "lexer_ns_ratio": 0.3451114909852031,
+      "check_ns_ratio": 0.3656376761363749
+    }
+  ]
+}

@@ -270,3 +270,23 @@ alongside instrumentation overhead.
 Use `--stdlib-file shutil.py` to select modules.
 `--live-lexer` reproduces the historical lexer-lifetime experiment on revision `e236a65`; current revisions already
 retain the lexer until an annotation suspends it.
+
+To measure lexer changes independently of structural accounting, build
+`cargo build --release --example lexer_benchmark --example benchmark` and save
+both binaries before editing. Rebuild after the change, then compare:
+
+```sh
+python3 tools/profile_lexer.py \
+  --baseline-lexer /tmp/lexer-before --baseline-checker /tmp/checker-before \
+  --lexer target/release/examples/lexer_benchmark \
+  --checker target/release/examples/benchmark --output /tmp/lexer-profile.json
+python3 tools/check_lexer_equivalence.py \
+  --baseline /tmp/lexer-before --lexer target/release/examples/lexer_benchmark \
+  --output /tmp/lexer-equivalence.json
+```
+
+The profile compares isolated lexing and complete reusable checks, including
+standard-library modules and synthetic hot paths. The equivalence tool compares
+exact token streams on malformed inputs, standard-library source, and the retained
+corpus. The lexer example also provides `--sample` for a ten-second CPU sampling
+run on source piped through stdin.

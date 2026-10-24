@@ -721,3 +721,16 @@ case, 2.97 µs for an accepted 80-member chain, 135.46 µs for a 60 KiB flat sou
 µs for an early rejection of a 5,000-member chain.
 The accepted flat source took 9.7% of Ruff's parse time; the larger `shutil.py` input took 54.0%.
 Results are in `campaigns/2026-10-24-final-benchmark.json` and remain specific to this machine and build.
+
+## Lexer run scanning
+
+The [lexer profile](campaigns/2026-10-24-lexer-profile/SUMMARY.md) compares release
+binaries before and after bulk scanning of interpolated-string text and horizontal
+whitespace. Sampling found repeated quote comparisons in literal f-string text;
+a separate text helper also keeps that work out of ordinary token dispatch.
+The six measured standard-library modules improved by 3–8% in isolated lexing
+and about 0–2% in complete reusable checks. Long-text f-strings and long whitespace
+runs improved substantially more, while identifier-heavy and ordinary-string
+checks were roughly unchanged. These synthetic gains are workload-specific.
+All 3,205 compared inputs retained identical token kinds and ranges, and allocation
+regressions passed. The report retains timings, sampling stacks, and limitations.
