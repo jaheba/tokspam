@@ -6,13 +6,21 @@ quoted annotations interpreted as Python. Exhausting that budget returns `Reason
 specific structural violation.
 `check` returns a reason and a byte range for rejected input.
 For repeated use, create a `Checker` once per worker.
-Construction reserves bounded heap storage in shared `Vec` buffers. Every subsequent check performs zero heap
-allocations, including the first check and checks after rejection. The one-shot `check` constructs and drops this storage
-on each call. Most capacities follow configured limits; width tracking reserves its hard capacity because unfinished
+For fixed `Limits`, allocated scratch memory is constant with respect to input
+length and structure. Capacities depend on configuration and fixed implementation
+ceilings; input cannot grow them. The borrowed source itself is not scratch memory.
+`Checker::new(limits)` validates the configuration but allocates no scratch buffers.
+The first non-oversized check reserves all storage from the limits before token
+scanning. `Checker::preallocated(limits)` performs that reservation immediately,
+so even its first check performs zero heap allocations. Both modes retain capacity
+after each scan and rejection; later scans allocate nothing. Resetting clears
+lengths, segment bases, and scalar tracking state, without shrinking buffers.
+The one-shot `check` constructs and drops a lazy checker on each call.
+Most capacities follow configured limits; width tracking reserves its hard capacity because unfinished
 lambda parameter lists can accumulate before parser depth is charged. Compact stack entries and shared annotation
 segments keep the memory savings independent of the backing storage.
-On the measured 64-bit target, `size_of::<Checker>()` is 472 bytes. Scratch requests total 24,698 bytes at default
-limits and 81,718 bytes at maximum structural and annotation depths, in eight allocations. These figures exclude
+On the measured 64-bit target, `size_of::<Checker>()` is 472 bytes. Initialized scratch requests total 25,578 bytes at default
+limits and 90,182 bytes at maximum structural and annotation depths, in eight allocations. These figures exclude
 allocator overhead and the borrowed source.
 
 ```rust
@@ -53,7 +61,7 @@ The one-shot `check` function reports `Reason::Configuration` at `0..0` for inva
 | Indentation depth | 1,024 |
 | Nested quoted annotations | 32 |
 | Estimated AST depth | 4,096 |
-| Each experimental construct width | 1,000,000 |
+| Each optional construct width | 1,000,000 |
 
 The optional AST check counts long binary, attribute, call, and subscript chains that a parser may construct iteratively
 but later destroy recursively.
@@ -93,7 +101,7 @@ and f-string conversion grammar still require the downstream parser.
 Tokspam exposes independent optional budgets for call arguments, function and lambda parameters, display items, subscript
 items, and f-string or template-string interpolation fields.
 All five default to `None`, so upgrading does not enable them automatically.
-The former `experimental-width-limits` Cargo feature is a compatibility no-op.
+Width budgets are always available; no Cargo feature is required.
 The first calibrated profile uses 4,096 for calls, parameters, slices, and interpolation fields and 8,192 for displays.
 These values are starting points rather than stable defaults; see the [width-limit
 experiment](https://github.com/jaheba/tokspam-fuzzer/blob/main/campaigns/2026-10-24-width-limits/SUMMARY.md).

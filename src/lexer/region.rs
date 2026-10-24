@@ -1,4 +1,4 @@
-//! Experimental statement proofs sharing the detailed lexer's workspace.
+//! Statement proofs sharing the detailed lexer's workspace.
 use super::{BYTE_CLASSES, Context, Kind, Lexer, NAME_BYTE, NUMBER_BYTE};
 
 impl Lexer<'_, '_> {

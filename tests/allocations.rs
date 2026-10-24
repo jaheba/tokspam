@@ -133,7 +133,7 @@ fn source_cannot_change_allocation_count_or_size() {
             );
         }
 
-        let mut checker = Checker::new(limits.clone()).expect("valid limits");
+        let mut checker = Checker::preallocated(limits.clone()).expect("valid limits");
 
         // Include the first call and reuse after failures: neither may allocate
         // or retain lexer/scanner state from an earlier source.
@@ -144,7 +144,7 @@ fn source_cannot_change_allocation_count_or_size() {
                 "{source:?}",
             );
             assert_eq!(checker.check(source), check(source, &limits));
-            #[cfg(feature = "experimental-regions")]
+            #[cfg(feature = "regions")]
             {
                 assert_eq!(
                     allocations(|| checker.check_regions(source)),
@@ -179,12 +179,12 @@ fn annotation_depth_shares_bounded_backing_buffers() {
             ..Limits::default()
         };
         let outer_only = allocations(|| {
-            std::hint::black_box(Checker::new(limits.clone()).unwrap());
+            std::hint::black_box(Checker::preallocated(limits.clone()).unwrap());
             Ok(())
         });
         let nested = allocations(|| {
             std::hint::black_box(
-                Checker::new(Limits {
+                Checker::preallocated(Limits {
                     check_string_annotations: true,
                     max_annotation_depth: tokspam::MAX_ANNOTATION_DEPTH,
                     ..limits.clone()
@@ -232,7 +232,7 @@ fn hard_depth_boundaries_do_not_grow_scratch() {
             .collect::<String>()
             + &" ".repeat(nesting)
     );
-    let mut checker = Checker::new(limits).unwrap();
+    let mut checker = Checker::preallocated(limits).unwrap();
 
     for _ in 0..2 {
         for source in [&accepted, &annotation, &indented] {
@@ -248,6 +248,57 @@ fn hard_depth_boundaries_do_not_grow_scratch() {
                 Allocations::default()
             );
             assert!(checker.check(source).is_err());
+        }
+    }
+}
+
+#[test]
+fn lazy_initialization_matches_preallocation_and_retains_capacity() {
+    let limits = Limits {
+        max_source_bytes: 4096,
+        ..Limits::default()
+    };
+    let mut lazy = None;
+    assert_eq!(
+        allocations(|| {
+            lazy = Some(Checker::new(limits.clone()).unwrap());
+            Ok(())
+        }),
+        Allocations::default()
+    );
+    let lazy = lazy.as_mut().unwrap();
+
+    let oversized = " ".repeat(limits.max_source_bytes + 1);
+    assert_eq!(
+        allocations(|| lazy.check(&oversized)),
+        Allocations::default()
+    );
+    assert_eq!(
+        lazy.check(&oversized).unwrap_err().reason,
+        tokspam::Reason::SourceSize
+    );
+
+    let upfront = allocations(|| {
+        std::hint::black_box(Checker::preallocated(limits.clone()).unwrap());
+        Ok(())
+    });
+    assert!(upfront.calls > 0);
+    assert_eq!(upfront.reallocations, 0);
+    assert_eq!(allocations(|| lazy.check("")), upfront);
+
+    let deep = format!("{}0{}", "[".repeat(80), "]".repeat(80));
+    let annotation = format!("x: \"list['{}int{}']\"", "[".repeat(101), "]".repeat(101));
+    let mut eager = Checker::preallocated(limits.clone()).unwrap();
+    for source in [deep.as_str(), "([)]", annotation.as_str(), "x = 1\n"] {
+        assert_eq!(allocations(|| lazy.check(source)), Allocations::default());
+        assert_eq!(lazy.check(source), eager.check(source));
+        #[cfg(feature = "regions")]
+        {
+            assert_eq!(
+                allocations(|| lazy.check_regions(source)),
+                Allocations::default()
+            );
+            assert_eq!(lazy.check_regions(source), eager.check_regions(source));
         }
     }
 }

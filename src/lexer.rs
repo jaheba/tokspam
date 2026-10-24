@@ -2,7 +2,7 @@
 use crate::stack::{Mark, STRUCTURAL_CAPACITY, Stack};
 use std::ops::Range;
 
-#[cfg(feature = "experimental-regions")]
+#[cfg(feature = "regions")]
 #[path = "lexer/region.rs"]
 mod region;
 

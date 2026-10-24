@@ -63,7 +63,9 @@ and folded with the child's peak on return. This updates scalar totals without w
 The fold examines at most six entries per token, and the extra scalar per structural level does not add allocations.
 Unfinished lambda parameter lists can retain width frames before charging parser depth. Exhausting the fixed width
 buffer returns `Inconclusive`, because a structural violation has not necessarily been established.
-Construction allocates scratch storage before token scanning; scanning performs zero heap allocations. Allocation
+`Checker::new` defers scratch allocation until the first non-oversized check;
+`Checker::preallocated` reserves it at construction. Both reserve the full configured
+storage before token scanning, which performs zero heap allocations. Allocation
 count and sizes depend only on configuration. Pushes cannot silently grow buffers if accounting invariants are broken.
 Rejection does not leave segment bases active for the next check.
 The allocation regression tests cover construction and accepted and rejected input under several configurations.

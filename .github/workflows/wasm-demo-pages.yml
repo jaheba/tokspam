@@ -1,0 +1,52 @@
+name: Publish WebAssembly demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/wasm-demo-pages.yml
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - examples/wasm-demo/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install WebAssembly target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Build demo
+        run: sh examples/wasm-demo/build.sh
+      - name: Prepare site
+        run: |
+          mkdir -p _site
+          cp examples/wasm-demo/index.html examples/wasm-demo/demo.js examples/wasm-demo/tokspam_demo.wasm _site/
+          mkdir -p _site/samples
+          cp examples/wasm-demo/samples/*.py _site/samples/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

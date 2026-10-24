@@ -13,8 +13,7 @@ include = ["src/**", "README.md", "docs/SAFETY.md", "docs/CONFIGURATION.md", "te
 name = "tokspam"
 
 [features]
-experimental-regions = []
-experimental-width-limits = [] # Compatibility no-op; width limits are always available.
+regions = []
 
 [dependencies]
 memchr = "2.8"

@@ -1,6 +1,6 @@
 # Repository role
 
-Tokspam is an experimental Rust library that screens Python source before it reaches a parser.
+Tokspam is a Rust library that screens Python source before it reaches a parser.
 It detects source shapes that may consume excessive parser or AST stack space, including deep nesting, indentation,
 operator chains, and quoted annotations.
 
@@ -24,8 +24,8 @@ Tokspam is integrated at Monty's pre-parser source guard, while the library rema
 - Fuzzing, corpus generation, parser comparisons, and benchmarks live in the separate `tokspam-fuzzer` project.
 
 The sole runtime dependency is `memchr`, used for optimized byte searches.
-Scratch allocation count and sizes depend only on `Limits`; input must not trigger additional heap allocations during
-scanning.
+Scratch allocation count and sizes depend only on `Limits`. `Checker::new` initializes lazily before its first scan;
+`Checker::preallocated` reserves buffers at construction. Neither mode allocates while scanning tokens.
 Oversized source is rejected before scratch allocation.
 
 Read `docs/SAFETY.md` before changing resource accounting or claiming parser safety.
@@ -35,7 +35,7 @@ Hard configuration ceilings and shared byte and token budgets bound nested scans
 Preserve the distinction between these implemented bounds and parser-safety claims.
 
 Use `README.md` and `docs/CONFIGURATION.md` for library usage.
-Experimental results and tooling documentation live in `tokspam-fuzzer`.
+Benchmark results and tooling documentation live in `tokspam-fuzzer`.
 Parser campaign outcomes apply to the tested versions and conditions; they are not general proofs of safety.
 
 # Development conventions

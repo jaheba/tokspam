@@ -21,7 +21,7 @@ fn unrecognized_ascii_code_bytes_are_rejected_at_their_source_range() {
             assert_eq!(error.reason, Reason::LexicalStructure, "{source:?}");
             assert_eq!(error.range, offset..offset + 1, "{source:?}");
             assert_eq!(check(&source, &limits), Err(error.clone()));
-            #[cfg(feature = "experimental-regions")]
+            #[cfg(feature = "regions")]
             assert_eq!(checker.check_regions(&source), Err(error));
 
             // Lexical rejection must not poison the next use of this worker.
@@ -48,7 +48,7 @@ fn literal_and_comment_text_and_supported_punctuation_are_preserved() {
         "π = 1\n",
     ] {
         assert!(checker.check(source).is_ok(), "{source:?}");
-        #[cfg(feature = "experimental-regions")]
+        #[cfg(feature = "regions")]
         assert!(checker.check_regions(source).is_ok(), "{source:?}");
     }
 }

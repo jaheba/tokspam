@@ -5,7 +5,7 @@ use crate::stack::{Mark, STRUCTURAL_CAPACITY, Stack};
 
 /// Estimates parser frames from lexical structure.
 /// Brackets, operators, bodies, format specs and blocks consume depth.
-/// Coverage of malformed input remains experimental.
+/// Malformed-input coverage is not a verified downstream safety guarantee.
 /// Parser and AST estimates share structural state and keep separate totals.
 pub(super) struct Scanner {
     /// Open bracket levels, bottom entry being the module or expression itself.
@@ -139,7 +139,7 @@ impl Scanner {
         self.state.total = 0;
     }
 
-    #[cfg(feature = "experimental-regions")]
+    #[cfg(feature = "regions")]
     pub(super) fn region_budget(&self) -> Option<usize> {
         // Called only after a logical newline/layout token. These boundaries
         // release local frames; only unfinished lambda parameters can survive.
@@ -159,7 +159,7 @@ impl Scanner {
         )
     }
 
-    #[cfg(feature = "experimental-regions")]
+    #[cfg(feature = "regions")]
     pub(super) fn finish_region(&mut self, seen_code: bool) {
         // First-token elif/else and pending lambdas are excluded by the proof.
         // A normal first token clears this indent's branch run, then newline

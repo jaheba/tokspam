@@ -2,7 +2,8 @@
 
 Tokspam is a Rust library that screens Python source before it reaches a parser.
 It provides a first layer of resource checks for applications that accept
-untrusted or generated Python code.
+untrusted or generated Python code. It is designed for fast preflight screening,
+with constant scratch-memory usage for a fixed set of limits.
 
 ## Why check before parsing?
 
@@ -39,6 +40,23 @@ It lets you reject inputs that exceed your resource budgets before paying the
 cost of parsing them. Limits cover source size, tokens, nesting, indentation,
 estimated AST depth, and cumulative scanning work.
 
+## Efficiency
+
+Tokspam uses a streaming, byte-oriented lexer and compact structural accounting.
+It builds neither an AST nor a token list, uses optimized byte searches to skip
+literal text, and stops as soon as a budget is exceeded. Ordinary scanning is
+linear in the bytes and tokens processed; annotation rescans share a bounded work
+budget.
+
+**For fixed `Limits`, allocated scratch memory is constant with respect to the
+input.** Buffer capacities depend on configuration, not source length or shape.
+A longer input or deeper expression cannot trigger buffer growth. The source is
+borrowed, so its storage remains the caller's responsibility.
+
+Allocation is a one-time initialization cost per checker, either deferred until
+the first scan or requested up front. Subsequent checks reuse the same buffers
+without heap allocations, including after rejected inputs.
+
 ## Usage
 
 The crate is named `tokspam`. Create a reusable checker with limits suited to your
@@ -63,9 +81,23 @@ fn main() -> Result<(), tokspam::Rejection> {
 }
 ```
 
-A rejection includes a reason and a byte range. Reuse one `Checker` per worker:
-it allocates scratch space during construction and reuses it without allocating
-while checking inputs. For a one-off check, use `tokspam::check`.
+A rejection includes a reason and a byte range. Reuse one `Checker` per worker.
+`Checker::new(limits)` is lazy: construction allocates no scratch buffers. The
+first scan reserves storage for the configured limits; later checks reuse it.
+Oversized inputs are rejected before this allocation.
+
+To move allocation out of the first check, opt into preallocation:
+
+```rust
+let mut checker = tokspam::Checker::preallocated(tokspam::Limits::default())
+    .expect("valid limits");
+checker.check("x = 1").expect("source within limits");
+```
+
+Each scan clears the buffers' logical contents and tracking state, including after
+a previous rejection. It retains their capacity: no shrinking or reallocation is
+needed for later inputs. Neither mode grows buffers while scanning tokens.
+The one-off `tokspam::check` creates and drops a lazy checker on each call.
 
 For larger package files, `Limits::package_sources()` increases the source and
 token budgets while keeping the default structural limits. See
@@ -127,8 +159,34 @@ violation.
 
 The scan builds neither an AST nor a token list. Simple unindented lines can use
 a conservative byte-based fast path; other input uses detailed structural
-accounting. Preallocated buffers and an explicit annotation work stack keep
+accounting. Bounded reusable buffers and an explicit annotation work stack keep
 scanning allocations and native call-stack depth independent of source nesting.
+
+## Testing and compatibility
+
+Tokspam is tested against real-world Python libraries as well as deliberately
+hostile input. Recorded whole-library sweeps using `Limits::package_sources()`
+accepted all **2,437 Python files from PyTorch 2.14.1** and **2,057 files from
+CPython 3.15.1's `Lib/`, including its tests**. Three intentionally invalid
+encoding fixtures were excluded before screening. An earlier calibration also
+accepted all 2,955 retained files from CPython 3.15, Monty, and Pydantic.
+
+Validation combines:
+
+- **Focused regressions** for limit boundaries, operator precedence, Unicode,
+  malformed source, annotations, and checker reuse after rejection. Allocation
+  tests verify fixed scratch capacity and allocation-free scanning.
+- **Generated parser comparisons** against CPython and Ruff, with retained
+  reproducers for crashes, resource failures, and conservative rejections.
+- **Over six million fuzz executions** across raw-source/configuration and
+  grammar-guided targets under AddressSanitizer, with no crash or sanitizer
+  finding in the recorded extended campaign.
+
+These are source-screening results, not claims about importing or running those
+libraries. The [library compatibility report](https://github.com/jaheba/tokspam-fuzzer/blob/main/corpus/library-suites/README.md),
+[calibration results](https://github.com/jaheba/tokspam-fuzzer/blob/main/campaigns/2026-10-24-calibration/SUMMARY.md),
+and [fuzzing report](https://github.com/jaheba/tokspam-fuzzer/blob/main/campaigns/2026-10-24-shared-scratch-long-fuzz/SUMMARY.md)
+record the tested versions, profiles, inputs, and conditions.
 
 ## Scope
 

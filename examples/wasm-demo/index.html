@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tokspam WebAssembly demo</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+    body { max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+    textarea { box-sizing: border-box; width: 100%; min-height: 16rem; padding: .8rem; font: 14px/1.5 ui-monospace, monospace; }
+    button { margin: .7rem .5rem .7rem 0; padding: .55rem .9rem; cursor: pointer; }
+    output { display: block; padding: .8rem; border: 1px solid; border-radius: .3rem; white-space: pre-wrap; }
+    output[data-state="pass"] { border-color: #25824a; }
+    output[data-state="reject"] { border-color: #c74537; }
+    .note { color: gray; }
+  </style>
+</head>
+<body>
+  <h1>Tokspam WebAssembly demo</h1>
+  <p>Try an ordinary Python file and a deeply nested expression, then edit the source yourself. Screening runs in this browser tab.</p>
+  <label for="source">Python source</label>
+  <textarea id="source" spellcheck="false"></textarea>
+  <div>
+    <button id="check" disabled>Loading WebAssembly…</button>
+    <button id="normal" type="button" disabled>Try ordinary file</button>
+    <button id="nested" type="button" disabled>Try deep nesting</button>
+  </div>
+  <output id="result" role="status">Loading…</output>
+  <p class="note">Elapsed time measures one Wasm screening call after encoding and copying the source. Browser timings vary; this is a demonstration, not a benchmark. A pass means only that the source stayed within Tokspam’s default screening budgets. It does not validate Python syntax or guarantee parser safety. Ranges refer to UTF-8 bytes.</p>
+  <script type="module" src="./demo.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-//! Experimental pre-parse screening with an independent lexer.
+//! Pre-parse screening with an independent lexer.
 //! Acceptance is not yet a verified bound on Python parser recursion.
 //!
 //! ```
@@ -113,7 +113,7 @@ pub struct Limits {
     pub check_string_annotations: bool,
     /// Flat AST-shape estimates supplement the parser-recursion rules.
     pub max_ast_depth: Option<u16>,
-    /// Experimental flat-width budgets. `None` preserves the normal scanner path.
+    /// Optional flat-width budgets. `None` preserves the normal scanner path.
     pub max_call_arguments: Option<usize>,
     pub max_parameters: Option<usize>,
     pub max_display_items: Option<usize>,
@@ -239,42 +239,56 @@ pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
 }
 
 /// Reusable screening state backed by bounded, shared scratch buffers.
-/// Construction reserves storage from the configured limits; subsequent checks
-/// perform no heap allocations.
+/// [`Checker::new`] defers scratch allocation until the first scan.
+/// [`Checker::preallocated`] reserves it during construction instead.
+/// Once initialized, checks reuse storage without further heap allocations.
 ///
 /// Use one checker per worker when screening many inputs before parsing them.
 /// Source strings are borrowed only for the duration of each check.
 pub struct Checker {
     limits: Limits,
+    buffers: Option<CheckBuffers>,
+}
+
+struct CheckBuffers {
     scratch: ScanScratch,
     work: Stack<ScanWork, SCAN_FRAMES>,
 }
 
 impl Checker {
+    /// Creates a checker without allocating scratch storage. The first scan
+    /// reserves all buffers from these limits before inspecting tokens.
     pub fn new(limits: Limits) -> Result<Self, ConfigError> {
         limits.validate()?;
         Ok(Self::new_validated(limits))
     }
 
     fn new_validated(limits: Limits) -> Self {
-        let frames = annotation_frames(&limits);
-
         Self {
-            scratch: ScanScratch::new(&limits),
-            work: Stack::with_capacity(frames),
             limits,
+            buffers: None,
         }
     }
 
-    /// Experimental statement-level proofs with local detailed fallback.
+    /// Reserves scratch storage immediately, including for the first check.
+    /// Input cannot grow these buffers; checks perform no heap allocations.
+    pub fn preallocated(limits: Limits) -> Result<Self, ConfigError> {
+        let mut checker = Self::new(limits)?;
+        checker.buffers = Some(CheckBuffers::new(&checker.limits));
+        Ok(checker)
+    }
+
+    /// Statement-level proofs with local detailed fallback.
     /// Returns the same rejection reasons and ranges as normal screening.
-    #[cfg(feature = "experimental-regions")]
+    #[cfg(feature = "regions")]
     pub fn check_regions(&mut self, source: &str) -> Result<(), Rejection> {
         self.check_mode::<true>(source)
     }
 
     /// Rejects source that exceeds the configured structural budgets.
     /// Successful screening does not validate Python syntax.
+    /// Each scan resets logical contents while retaining buffer capacities,
+    /// including when the preceding scan rejected its input.
     pub fn check(&mut self, source: &str) -> Result<(), Rejection> {
         self.check_mode::<false>(source)
     }
@@ -287,7 +301,26 @@ impl Checker {
             });
         }
 
-        scan::<true, REGIONS>(source, &self.limits, &mut self.scratch, &mut self.work)
+        // Initialize from configuration, never from input shape. Oversized
+        // source is rejected above without allocating a lazy checker's scratch.
+        let buffers = self
+            .buffers
+            .get_or_insert_with(|| CheckBuffers::new(&self.limits));
+        scan::<true, REGIONS>(
+            source,
+            &self.limits,
+            &mut buffers.scratch,
+            &mut buffers.work,
+        )
+    }
+}
+
+impl CheckBuffers {
+    fn new(limits: &Limits) -> Self {
+        Self {
+            scratch: ScanScratch::new(limits),
+            work: Stack::with_capacity(annotation_frames(limits)),
+        }
     }
 }
 
@@ -471,7 +504,7 @@ fn scan<const FAST: bool, const REGIONS: bool>(
         // Keep this frame's lexer live until an annotation suspends it. Saving
         // and rebuilding scalar state for every token adds work to normal code.
         let next_child = loop {
-            #[cfg(feature = "experimental-regions")]
+            #[cfg(feature = "regions")]
             if REGIONS
                 && !widths_enabled(limits)
                 && current.region_start
@@ -617,12 +650,12 @@ fn work_exceeded(bytes_scanned: usize, tokens_used: usize, limit: usize) -> bool
     bytes_scanned.saturating_add(tokens_used) > limit
 }
 
-#[cfg(feature = "experimental-regions")]
+#[cfg(feature = "regions")]
 fn widths_enabled(limits: &Limits) -> bool {
     limits.widths_enabled()
 }
 
-#[cfg(feature = "experimental-regions")]
+#[cfg(feature = "regions")]
 impl Limits {
     fn widths_enabled(&self) -> bool {
         self.max_call_arguments.is_some()
@@ -944,7 +977,7 @@ struct AnnotationState {
 }
 
 impl AnnotationTracker {
-    #[cfg(feature = "experimental-regions")]
+    #[cfg(feature = "regions")]
     fn region_ready(&self) -> bool {
         debug_assert!(self.brackets.is_empty() && !self.active());
         self.state.pending_lambdas == 0
@@ -1253,11 +1286,12 @@ mod fast_path_tests {
                             source.push_str(lines[(random >> 32) as usize % lines.len()]);
                         }
                         let actual = checker.check(&source);
+                        let buffers = checker.buffers.as_mut().expect("scan initialized buffers");
                         let expected = scan::<false, false>(
                             &source,
                             &limits,
-                            &mut checker.scratch,
-                            &mut checker.work,
+                            &mut buffers.scratch,
+                            &mut buffers.work,
                         );
                         assert_eq!(actual, expected, "{source:?}");
                     }

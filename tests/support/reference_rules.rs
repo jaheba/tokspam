@@ -4,7 +4,7 @@ use crate::lexer::Kind;
 
 /// Estimates parser frames from lexical structure.
 /// Brackets, operators, bodies, format specs and blocks consume depth.
-/// Coverage of malformed input remains experimental.
+/// Malformed-input coverage is not a verified downstream safety guarantee.
 /// `AST` specializes the two passes so parser-only scanning omits AST branches.
 pub(super) struct Scanner<const AST: bool> {
     limit: u32,

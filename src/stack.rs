@@ -44,7 +44,7 @@ impl<T, const N: usize> Stack<T, N> {
         self.data.truncate(self.base);
     }
 
-    #[cfg(feature = "experimental-regions")]
+    #[cfg(feature = "regions")]
     pub(crate) fn truncate(&mut self, length: usize) {
         self.data.truncate(self.base + length);
     }
