@@ -14,24 +14,30 @@ pub(crate) struct Mark {
 pub(crate) struct Stack<T, const N: usize> {
     data: Vec<T>,
     base: usize,
+    capacity_limit: usize,
 }
 
 impl<T, const N: usize> Default for Stack<T, N> {
     fn default() -> Self {
-        Self::with_capacity(N)
+        Self::with_storage(N, false)
     }
 }
 
 impl<T, const N: usize> Stack<T, N> {
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+    pub(crate) fn with_storage(capacity: usize, preallocated: bool) -> Self {
         const {
             assert!(N <= u16::MAX as usize);
         }
         assert!(capacity <= N);
 
         Self {
-            data: Vec::with_capacity(capacity),
+            data: if preallocated {
+                Vec::with_capacity(capacity)
+            } else {
+                Vec::new()
+            },
             base: 0,
+            capacity_limit: capacity,
         }
     }
 
@@ -54,10 +60,26 @@ impl<T, const N: usize> Stack<T, N> {
     }
 
     pub(crate) fn push(&mut self, value: T) {
-        // Capacities are fixed at construction, independently of input. Never
-        // silently allocate if a structural accounting invariant is broken.
-        assert!(self.data.len() < self.data.capacity() && !self.is_full());
+        assert!(self.data.len() < self.capacity_limit && !self.is_full());
+        if self.data.len() == self.data.capacity() {
+            self.grow();
+        }
         self.data.push(value);
+    }
+
+    #[cold]
+    fn grow(&mut self) {
+        // Vec's automatic doubling may exceed the configured ceiling. Reserve
+        // explicitly so growing and preallocated buffers share the same bound.
+        // Suspended annotations store indices, not element pointers, so moving
+        // the backing allocation cannot invalidate their segment marks.
+        let capacity = self
+            .data
+            .capacity()
+            .saturating_mul(2)
+            .max(4)
+            .min(self.capacity_limit);
+        self.data.reserve_exact(capacity - self.data.len());
     }
 
     pub(crate) fn suspend(&mut self) -> Mark {
@@ -102,6 +124,24 @@ impl<T, const N: usize> DerefMut for Stack<T, N> {
 #[cfg(test)]
 mod tests {
     use super::Stack;
+
+    #[test]
+    fn growth_stays_within_the_configured_ceiling_and_reset_retains_capacity() {
+        let mut stack = Stack::<u32, 32>::with_storage(19, false);
+        assert_eq!(stack.data.capacity(), 0);
+        for value in 0..19 {
+            stack.push(value);
+            assert!(stack.data.capacity() <= 19);
+        }
+        assert_eq!(stack.data.capacity(), 19);
+        stack.reset();
+        assert!(stack.is_empty());
+        assert_eq!(stack.data.capacity(), 19);
+        for value in 0..19 {
+            stack.push(value);
+        }
+        assert_eq!(stack.data.capacity(), 19);
+    }
 
     #[test]
     fn nested_segments_restore_parents_and_isolate_roots() {

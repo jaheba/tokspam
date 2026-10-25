@@ -30,7 +30,7 @@ jobs:
       - name: Prepare site
         run: |
           mkdir -p _site
-          cp examples/wasm-demo/index.html examples/wasm-demo/demo.js examples/wasm-demo/tokspam_demo.wasm _site/
+          cp examples/wasm-demo/index.html examples/wasm-demo/demo.js examples/wasm-demo/editor.js examples/wasm-demo/tokspam_demo.wasm _site/
           mkdir -p _site/samples
           cp examples/wasm-demo/samples/*.py _site/samples/
       - uses: actions/configure-pages@v5

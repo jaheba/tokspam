@@ -15,22 +15,24 @@ Tokspam is integrated at Monty's pre-parser source guard, while the library rema
 
 # Implementation and safety
 
-- `src/lib.rs` exposes `check`, reusable `Checker`, `Limits`, and rejection reasons, and coordinates annotation
-  screening.
-- `src/lexer.rs` provides a streaming lexer that retains source ranges without decoding literals or collecting a token
-  list.
+- `src/lib.rs` exposes the public API; `src/limits.rs` defines and validates configuration.
+- `src/checker/mod.rs` coordinates scanning and quoted annotations. Its child modules own shared scratch,
+  annotation-position heuristics, and construct-width tracking.
+- `src/lexer/mod.rs` coordinates the streaming lexer and shared state. Its child modules separate code dispatch,
+  strings, indentation, byte searches, token types, and conservative proofs without collecting a token list.
 - `src/rules.rs` estimates parser recursion and AST depth from token structure.
 - `tests/` covers configurable limits and allocation behavior.
 - Fuzzing, corpus generation, parser comparisons, and benchmarks live in the separate `tokspam-fuzzer` project.
 
 The sole runtime dependency is `memchr`, used for optimized byte searches.
-Scratch allocation count and sizes depend only on `Limits`. `Checker::new` initializes lazily before its first scan;
-`Checker::preallocated` reserves buffers at construction. Neither mode allocates while scanning tokens.
+`Checker::new` uses empty vectors that grow on demand within limits-derived ceilings.
+`Checker::preallocated` reserves buffers at construction; only this mode guarantees allocation-free scanning.
+Both modes retain capacity between checks. Growth must never exceed configured scratch ceilings.
 Oversized source is rejected before scratch allocation.
 
 Read `docs/SAFETY.md` before changing resource accounting or claiming parser safety.
 It records the intended invariants and outstanding release requirements.
-Quoted-annotation scanning uses a preallocated explicit work stack.
+Quoted-annotation scanning uses a bounded explicit work stack.
 Hard configuration ceilings and shared byte and token budgets bound nested scans.
 Preserve the distinction between these implemented bounds and parser-safety claims.
 

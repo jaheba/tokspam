@@ -122,12 +122,12 @@ fn source_cannot_change_allocation_count_or_size() {
             ..Limits::default()
         },
     ] {
-        let expected = allocations(|| check("", &limits));
+        let expected = allocations(|| Checker::preallocated(limits.clone()).unwrap().check(""));
         assert_eq!(expected.reallocations, 0);
 
         for source in &sources {
             assert_eq!(
-                allocations(|| check(source, &limits)),
+                allocations(|| Checker::preallocated(limits.clone()).unwrap().check(source)),
                 expected,
                 "{source:?}"
             );
@@ -232,10 +232,12 @@ fn hard_depth_boundaries_do_not_grow_scratch() {
             .collect::<String>()
             + &" ".repeat(nesting)
     );
+    let mut growing = Checker::new(limits.clone()).unwrap();
     let mut checker = Checker::preallocated(limits).unwrap();
 
     for _ in 0..2 {
         for source in [&accepted, &annotation, &indented] {
+            assert_eq!(growing.check(source), checker.check(source));
             assert_eq!(
                 allocations(|| checker.check(source)),
                 Allocations::default()
@@ -243,6 +245,7 @@ fn hard_depth_boundaries_do_not_grow_scratch() {
             assert!(checker.check(source).is_ok());
         }
         for source in [&rejected, &annotation_rejected] {
+            assert_eq!(growing.check(source), checker.check(source));
             assert_eq!(
                 allocations(|| checker.check(source)),
                 Allocations::default()
@@ -253,7 +256,7 @@ fn hard_depth_boundaries_do_not_grow_scratch() {
 }
 
 #[test]
-fn lazy_initialization_matches_preallocation_and_retains_capacity() {
+fn growing_buffers_start_small_and_retain_capacity() {
     let limits = Limits {
         max_source_bytes: 4096,
         ..Limits::default()
@@ -284,12 +287,18 @@ fn lazy_initialization_matches_preallocation_and_retains_capacity() {
     });
     assert!(upfront.calls > 0);
     assert_eq!(upfront.reallocations, 0);
-    assert_eq!(allocations(|| lazy.check("")), upfront);
+    let small = allocations(|| lazy.check(""));
+    assert!(small.bytes < upfront.bytes);
+    assert_eq!(allocations(|| lazy.check("")), Allocations::default());
 
     let deep = format!("{}0{}", "[".repeat(80), "]".repeat(80));
     let annotation = format!("x: \"list['{}int{}']\"", "[".repeat(101), "]".repeat(101));
     let mut eager = Checker::preallocated(limits.clone()).unwrap();
+    let growth = allocations(|| lazy.check(&deep));
+    assert!(growth.calls + growth.reallocations > 0);
+    // Once a shape has been seen, clearing lengths preserves its capacity.
     for source in [deep.as_str(), "([)]", annotation.as_str(), "x = 1\n"] {
+        assert_eq!(lazy.check(source), eager.check(source));
         assert_eq!(allocations(|| lazy.check(source)), Allocations::default());
         assert_eq!(lazy.check(source), eager.check(source));
         #[cfg(feature = "regions")]

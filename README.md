@@ -3,7 +3,7 @@
 Tokspam is a Rust library that screens Python source before it reaches a parser.
 It provides a first layer of resource checks for applications that accept
 untrusted or generated Python code. It is designed for fast preflight screening,
-with constant scratch-memory usage for a fixed set of limits.
+with a scratch-memory ceiling determined by its configured limits.
 
 ## Why check before parsing?
 
@@ -40,6 +40,8 @@ It lets you reject inputs that exceed your resource budgets before paying the
 cost of parsing them. Limits cover source size, tokens, nesting, indentation,
 estimated AST depth, and cumulative scanning work.
 
+See [what each limit does](docs/LIMITS.md) for the rationale and tradeoffs behind every setting.
+
 ## Efficiency
 
 Tokspam uses a streaming, byte-oriented lexer and compact structural accounting.
@@ -48,14 +50,14 @@ literal text, and stops as soon as a budget is exceeded. Ordinary scanning is
 linear in the bytes and tokens processed; annotation rescans share a bounded work
 budget.
 
-**For fixed `Limits`, allocated scratch memory is constant with respect to the
-input.** Buffer capacities depend on configuration, not source length or shape.
-A longer input or deeper expression cannot trigger buffer growth. The source is
-borrowed, so its storage remains the caller's responsibility.
+**The scratch-memory ceiling depends on `Limits`, not input length.** By default,
+buffers start empty and grow on demand, up to that ceiling. For a fixed allocated
+footprint and allocation-free checks, opt into `Checker::preallocated(limits)`.
+The source is borrowed, so its storage remains the caller's responsibility.
 
-Allocation is a one-time initialization cost per checker, either deferred until
-the first scan or requested up front. Subsequent checks reuse the same buffers
-without heap allocations, including after rejected inputs.
+Both modes retain buffer capacity between checks. Growing mode may allocate when
+a new input needs more space; preallocated mode reserves everything up front and
+never allocates while scanning.
 
 ## Usage
 
@@ -82,11 +84,11 @@ fn main() -> Result<(), tokspam::Rejection> {
 ```
 
 A rejection includes a reason and a byte range. Reuse one `Checker` per worker.
-`Checker::new(limits)` is lazy: construction allocates no scratch buffers. The
-first scan reserves storage for the configured limits; later checks reuse it.
-Oversized inputs are rejected before this allocation.
+`Checker::new(limits)` starts with empty vectors. Checks grow them only as needed,
+within configured bounds, and retain that capacity for later inputs. Oversized
+inputs are rejected before initializing scratch storage.
 
-To move allocation out of the first check, opt into preallocation:
+To avoid allocations during checks, opt into full preallocation:
 
 ```rust
 let mut checker = tokspam::Checker::preallocated(tokspam::Limits::default())
@@ -95,8 +97,8 @@ checker.check("x = 1").expect("source within limits");
 ```
 
 Each scan clears the buffers' logical contents and tracking state, including after
-a previous rejection. It retains their capacity: no shrinking or reallocation is
-needed for later inputs. Neither mode grows buffers while scanning tokens.
+a previous rejection. It retains their capacity without shrinking. Default buffers
+can grow for more demanding inputs; preallocated buffers never need to grow.
 The one-off `tokspam::check` creates and drops a lazy checker on each call.
 
 For larger package files, `Limits::package_sources()` increases the source and
@@ -159,8 +161,8 @@ violation.
 
 The scan builds neither an AST nor a token list. Simple unindented lines can use
 a conservative byte-based fast path; other input uses detailed structural
-accounting. Bounded reusable buffers and an explicit annotation work stack keep
-scanning allocations and native call-stack depth independent of source nesting.
+accounting. Bounded reusable buffers cap scratch memory, and an explicit annotation
+work stack keeps native call-stack depth independent of source nesting.
 
 ## Testing and compatibility
 
@@ -175,7 +177,7 @@ Validation combines:
 
 - **Focused regressions** for limit boundaries, operator precedence, Unicode,
   malformed source, annotations, and checker reuse after rejection. Allocation
-  tests verify fixed scratch capacity and allocation-free scanning.
+  tests verify bounded growth, capacity reuse, and allocation-free preallocated checks.
 - **Generated parser comparisons** against CPython and Ruff, with retained
   reproducers for crashes, resource failures, and conservative rejections.
 - **Over six million fuzz executions** across raw-source/configuration and

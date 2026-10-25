@@ -83,14 +83,19 @@ enum LevelKind {
 impl Scanner {
     #[cfg(test)]
     pub(super) fn new(limit: u32, ast_limit: Option<u32>) -> Self {
-        Self::with_capacity(limit, ast_limit, limit as usize + 2)
+        Self::with_storage(limit, ast_limit, limit as usize + 2, true)
     }
 
-    pub(super) fn with_capacity(limit: u32, ast_limit: Option<u32>, capacity: usize) -> Self {
+    pub(super) fn with_storage(
+        limit: u32,
+        ast_limit: Option<u32>,
+        capacity: usize,
+        preallocated: bool,
+    ) -> Self {
         let mut scanner = Self {
-            levels: Stack::with_capacity(capacity),
-            match_blocks: Stack::with_capacity(capacity),
-            elif_runs: Stack::with_capacity(capacity),
+            levels: Stack::with_storage(capacity, preallocated),
+            match_blocks: Stack::with_storage(capacity, preallocated),
+            elif_runs: Stack::with_storage(capacity, preallocated),
             state: ScannerState::default(),
         };
         scanner.reset(limit, ast_limit);

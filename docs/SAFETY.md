@@ -20,7 +20,7 @@ Source nesting may increase the size of an explicit heap-backed work stack, subj
 must not increase the native Rust call-stack depth.
 
 The lexer, structural scanners, and quoted-annotation scanner are iterative.
-Quoted annotations use a bounded preallocated work stack with one frame per permitted annotation level.
+Quoted annotations use a bounded explicit work stack with one frame per permitted annotation level.
 Suspending an outer scan retains scalar tracking state and leaves its live stack entries in shared backing buffers.
 The child uses a new segment above those entries; returning truncates the child segment and restores the parent.
 Children inherit the remaining parser-depth budget, so live delimiter and indentation entries across scans are bounded
@@ -44,7 +44,7 @@ For accepted configuration, one call to `check` must have these bounds:
 - Ordinary scanning is linear in source bytes and emitted tokens.
 - Annotation contents are charged to one shared byte and token budget when scanned as Python source.
 
-The implementation uses seven shared `Vec` scratch buffers and a preallocated work-frame `Vec`.
+The implementation uses seven shared `Vec` scratch buffers and a bounded work-frame `Vec`.
 Capacities are determined by configured nesting, indentation, and annotation limits, including per-frame roots and
 transient overflow entries. The width tracker reserves its hard capacity for unfinished lambda parameter lists, which
 can accumulate before charging parser depth. Capacities remain bounded by hard implementation ceilings.
@@ -63,10 +63,15 @@ and folded with the child's peak on return. This updates scalar totals without w
 The fold examines at most six entries per token, and the extra scalar per structural level does not add allocations.
 Unfinished lambda parameter lists can retain width frames before charging parser depth. Exhausting the fixed width
 buffer returns `Inconclusive`, because a structural violation has not necessarily been established.
-`Checker::new` defers scratch allocation until the first non-oversized check;
-`Checker::preallocated` reserves it at construction. Both reserve the full configured
-storage before token scanning, which performs zero heap allocations. Allocation
-count and sizes depend only on configuration. Pushes cannot silently grow buffers if accounting invariants are broken.
+When all optional width budgets are disabled, capacity-only tracking preserves the
+same frame openings, parameter closures, and shared hard-capacity rejection without
+maintaining unused item counts. The mode is selected once for each input.
+`Checker::new` starts with empty vectors and grows them on demand up to configured
+ceilings. Allocated capacity may depend on input in this mode, but its upper bound
+does not. Explicit geometric reservation caps every growth request at its ceiling.
+`Checker::preallocated` reserves that complete storage at construction; scanning
+then performs zero heap allocations, with allocation count and sizes determined
+only by configuration. Both modes assert logical push bounds before appending.
 Rejection does not leave segment bases active for the next check.
 The allocation regression tests cover construction and accepted and rejected input under several configurations.
 `Limits::validate` and `Checker::new` reject settings above the hard ceilings; the one-shot `check` API returns a

@@ -5,28 +5,260 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tokspam WebAssembly demo</title>
   <style>
-    :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
-    body { max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
-    textarea { box-sizing: border-box; width: 100%; min-height: 16rem; padding: .8rem; font: 14px/1.5 ui-monospace, monospace; }
-    button { margin: .7rem .5rem .7rem 0; padding: .55rem .9rem; cursor: pointer; }
-    output { display: block; padding: .8rem; border: 1px solid; border-radius: .3rem; white-space: pre-wrap; }
-    output[data-state="pass"] { border-color: #25824a; }
-    output[data-state="reject"] { border-color: #c74537; }
-    .note { color: gray; }
+    :root {
+      color-scheme: light dark;
+      font: 16px/1.5 system-ui, sans-serif;
+      background: #f5f7fb;
+      color: #17243b;
+    }
+    * { box-sizing: border-box; }
+    body { max-width: 78rem; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+    h1, h2, p { margin-top: 0; }
+    h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.1; letter-spacing: -.04em; margin-bottom: .6rem; }
+    h2 { font-size: 1.2rem; margin-bottom: .2rem; }
+    .eyebrow { color: #3559a8; font-size: .78rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    .intro { max-width: 42rem; color: #4b5b75; font-size: 1.1rem; }
+    .explainer { max-width: 48rem; margin-top: 1.2rem; padding: 1rem 1.2rem; border-left: 3px solid #4269bc; border-radius: .3rem; background: #eaf0fc; }
+    .explainer p { margin: .25rem 0 0; color: #43546f; }
+    .panel { margin-top: 1rem; padding: 1.4rem; border: 1px solid #d8e0ec; border-radius: 1rem; background: #fff; box-shadow: 0 4px 20px #2336540a; }
+    .workspace { display: grid; grid-template-columns: 15rem minmax(0, 1fr); align-items: start; gap: 1rem; margin-top: 1rem; }
+    .samples-panel { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); margin-top: 0; overflow-y: auto; padding: 1rem; }
+    .work-area { min-width: 0; }
+    .work-area > .panel:first-child { margin-top: 0; }
+    .samples-panel h2 { font-size: 1.15rem; }
+    .sample-group { margin-top: 1.2rem; }
+    .sample-group h3 { margin: 0 0 .45rem; color: #53627c; font-size: .78rem; letter-spacing: .07em; text-transform: uppercase; }
+    .sample-group.good h3 { color: #24764c; }
+    .sample-group.bad h3 { color: #a44842; }
+    .sample-list { display: grid; gap: .45rem; }
+    .sample-file { width: 100%; padding: .7rem .75rem; border: 1px solid #cdd8e9; border-radius: .55rem; background: #f8faff; color: inherit; text-align: left; cursor: pointer; }
+    .sample-file:hover:not(:disabled), .sample-file:focus-visible { border-color: #4269bc; background: #eef3ff; }
+    .sample-file[aria-pressed="true"] { border-color: #4269bc; box-shadow: inset 0 0 0 1px #4269bc; }
+    .sample-file strong, .sample-file small { display: block; }
+    .sample-file strong { font: 700 .85rem/1.3 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+    .sample-file small { margin-top: .2rem; color: #586780; font-size: .75rem; }
+    .sample-help { margin: 1rem 0 0; color: #5a6880; font-size: .78rem; }
+    .step-heading { display: flex; align-items: flex-start; gap: .9rem; margin-bottom: 1rem; }
+    .step-number { display: inline-grid; flex: 0 0 2rem; place-items: center; height: 2rem; border-radius: .6rem; background: #e7edfc; color: #244d9b; font-weight: 800; }
+    .step-heading p, .hint, .note { color: #5a6880; }
+    .step-heading p { margin-bottom: 0; }
+    .limits { margin: 0 0 1.3rem; padding: 1rem; border: 1px solid #d5dfec; border-radius: .7rem; background: #f8faff; }
+    .limits-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }
+    .limits-head h3 { margin: 0; font-size: 1rem; }
+    .reset { padding: .35rem .65rem; border: 1px solid #b9c7dc; border-radius: .4rem; background: transparent; color: inherit; font: inherit; font-size: .84rem; cursor: pointer; }
+    .reset:hover:not(:disabled) { background: #e7edfc; }
+    .limits-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem 1rem; }
+    .limits-grid label { margin: 0; font-size: .85rem; }
+    .limits-grid small { display: block; margin-top: .35rem; color: #5a6880; font-size: .78rem; font-weight: 400; line-height: 1.35; }
+    .limits-grid input { display: block; width: 100%; margin-top: .25rem; padding: .45rem .6rem; border: 1px solid #b9c7dc; border-radius: .4rem; background: #fff; color: inherit; font: inherit; font-weight: 500; }
+    .limits-grid input:invalid { border-color: #c74537; }
+    .limits-secondary { margin-top: .8rem; border-top: 1px solid #d5dfec; padding-top: .65rem; }
+    .limits-secondary summary { color: #486185; cursor: pointer; font-size: .85rem; font-weight: 700; }
+    .limits-secondary .limits-grid { margin-top: .75rem; }
+    .limits-note { margin: .8rem 0 0; color: #5a6880; font-size: .82rem; }
+    .limits-error { margin: .6rem 0 0; color: #a02c23; font-size: .85rem; font-weight: 700; }
+    label { display: block; margin-bottom: .5rem; font-weight: 700; }
+    .editor { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr); height: 18rem; overflow: hidden; border: 1px solid #b9c7dc; border-radius: .7rem; background: #fbfcff; }
+    .line-numbers, .code-layer, .code-input { margin: 0; padding: 1rem; font: 14px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-ligatures: none; tab-size: 4; }
+    .line-numbers { overflow: hidden; padding-right: .65rem; padding-left: .35rem; border-right: 1px solid #d7e0ef; color: #8795aa; text-align: right; white-space: pre; user-select: none; }
+    .code-pane { position: relative; min-width: 0; overflow: hidden; }
+    .code-layer, .code-input { position: absolute; inset: 0; width: 100%; height: 100%; overflow: auto; white-space: pre; }
+    .code-layer { display: none; pointer-events: none; }
+    .code-input { display: block; border: 0; border-radius: 0; background: transparent; color: inherit; resize: none; }
+    .code-input::placeholder { color: #8795aa; }
+    .editor-ready .code-layer { display: block; overflow: hidden; }
+    .editor-ready .code-input { color: transparent; caret-color: #17243b; }
+    .editor-ready .code-input::selection { background: #adc8ff8c; }
+    .editor-ready .code-input::placeholder { color: #8795aa; }
+    .editor-ready .editor[data-plain="true"] .code-layer { display: none; }
+    .editor-ready .editor[data-plain="true"] .code-input { color: inherit; }
+    .editor[data-plain="true"] { grid-template-columns: minmax(0, 1fr); }
+    .editor[data-plain="true"] .line-numbers { display: none; }
+    .tok-keyword { color: #7451bb; font-weight: 700; }
+    .tok-constant { color: #9b4d98; }
+    .tok-string { color: #087765; }
+    .tok-number { color: #af5f1d; }
+    .tok-comment { color: #738198; }
+    textarea:focus-visible, button:focus-visible { outline: 3px solid #89a9ed; outline-offset: 2px; }
+    .editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .8rem; }
+    .source-status { color: #596982; font-size: .9rem; }
+    .run { border: 0; border-radius: .65rem; padding: .75rem 1.2rem; background: #244fa8; color: white; font: inherit; font-weight: 700; cursor: pointer; }
+    .run:hover:not(:disabled) { background: #173b85; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .result { border: 1px solid #d4ddeb; border-radius: .75rem; padding: 1rem 1.2rem; background: #f7f9fd; }
+    .result[data-state="pass"] { border-color: #8dc7a6; background: #edf9f1; }
+    .result[data-state="reject"] { border-color: #e4a69c; background: #fff1ef; }
+    .result strong { display: block; font-size: 1.1rem; }
+    .result p { margin: .35rem 0 0; }
+    .result-meta { color: #596982; font-size: .88rem; }
+    .result-insights { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #d4ddeb; }
+    .result-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }
+    .result-facts div { min-width: 0; }
+    .result-facts span { display: block; color: #596982; font-size: .76rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .result-facts strong { margin-top: .25rem; font-size: .96rem; overflow-wrap: anywhere; }
+    .result-context { margin-top: 1rem; }
+    .context-heading { display: flex; align-items: center; justify-content: space-between; gap: .8rem; margin-bottom: .4rem; font-size: .88rem; font-weight: 700; }
+    .jump { padding: .35rem .6rem; border: 1px solid #c79087; border-radius: .4rem; background: transparent; color: inherit; font: inherit; font-size: .82rem; cursor: pointer; }
+    .jump:hover { background: #ffffff80; }
+    .excerpt { margin: 0; padding: .7rem .9rem; overflow-wrap: anywhere; border: 1px solid #ddb0a7; border-radius: .45rem; background: #fffaf8; color: #342926; font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+    .excerpt mark { padding: .08rem 0; border-radius: .15rem; background: #ffbe72; color: #251b14; }
+    .note { margin: 1.3rem .2rem 0; font-size: .88rem; }
+    @media (max-width: 55rem) {
+      .workspace { grid-template-columns: 1fr; }
+      .samples-panel { position: static; max-height: none; }
+      .sample-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 36rem) {
+      .sample-list { grid-template-columns: 1fr; }
+      .limits-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .editor-footer { align-items: stretch; flex-direction: column; }
+      .run { width: 100%; }
+      .result-facts { grid-template-columns: 1fr; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { background: #101827; color: #e8eef9; }
+      .intro, .step-heading p, .hint, .note, .source-status, .result-meta { color: #afbdd3; }
+      .explainer { background: #1e3150; border-color: #8cabeb; }
+      .explainer p { color: #c5d2e8; }
+      .eyebrow { color: #a8c2ff; }
+      .panel { background: #1b2638; border-color: #34445f; box-shadow: none; }
+      .step-number { background: #2b4169; color: #c8d9ff; }
+      .sample-file, .editor, .result { background: #172235; border-color: #445672; color: inherit; }
+      .limits { background: #172235; border-color: #445672; }
+      .limits-grid input { background: #101827; border-color: #526581; }
+      .reset { border-color: #526581; }
+      .reset:hover:not(:disabled) { background: #25395b; }
+      .limits-note { color: #afbdd3; }
+      .limits-error { color: #f2aaa3; }
+      .sample-file:hover:not(:disabled), .sample-file:focus-visible { background: #25395b; }
+      .sample-file small, .sample-help { color: #afbdd3; }
+      .sample-group.good h3 { color: #83d6a8; }
+      .sample-group.bad h3 { color: #efa69e; }
+      .line-numbers { border-color: #445672; color: #8190aa; }
+      .code-input::placeholder, .editor-ready .code-input::placeholder { color: #8190aa; }
+      .editor-ready .code-input { caret-color: #e8eef9; }
+      .tok-keyword { color: #bba2ff; }
+      .tok-constant { color: #e4a8e0; }
+      .tok-string { color: #7ad8bb; }
+      .tok-number { color: #f5b878; }
+      .tok-comment { color: #8494aa; }
+      .result[data-state="pass"] { background: #183a30; border-color: #4a9474; }
+      .result[data-state="reject"] { background: #482925; border-color: #b76b62; }
+      .result-insights { border-color: #79534d; }
+      .result-facts span { color: #c5b7b4; }
+      .jump { border-color: #b76b62; }
+      .jump:hover { background: #ffffff19; }
+      .excerpt { background: #251d20; border-color: #885750; color: #f2e7e4; }
+      .excerpt mark { background: #c87935; color: #fff; }
+    }
   </style>
 </head>
 <body>
-  <h1>Tokspam WebAssembly demo</h1>
-  <p>Try an ordinary Python file and a deeply nested expression, then edit the source yourself. Screening runs in this browser tab.</p>
-  <label for="source">Python source</label>
-  <textarea id="source" spellcheck="false"></textarea>
-  <div>
-    <button id="check" disabled>Loading WebAssembly…</button>
-    <button id="normal" type="button" disabled>Try ordinary file</button>
-    <button id="nested" type="button" disabled>Try deep nesting</button>
-  </div>
-  <output id="result" role="status">Loading…</output>
-  <p class="note">Elapsed time measures one Wasm screening call after encoding and copying the source. Browser timings vary; this is a demonstration, not a benchmark. A pass means only that the source stayed within Tokspam’s default screening budgets. It does not validate Python syntax or guarantee parser safety. Ranges refer to UTF-8 bytes.</p>
+  <header>
+    <p class="eyebrow">Tokspam · WebAssembly demo</p>
+    <h1>Check Python source limits before parsing</h1>
+    <p class="intro">Tokspam is a resource limit checker. It scans Python source for size, token count, nesting, indentation, and estimated AST depth before a parser sees it.</p>
+    <div class="explainer">
+      <strong>How to read the result</strong>
+      <p><b>Within limits</b> means no configured limit was exceeded. <b>Rejected</b> identifies a limit or screening problem. Tokspam does not validate Python syntax or decide whether code is safe to run.</p>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="panel samples-panel" aria-labelledby="samples-heading">
+      <div class="step-heading">
+        <span class="step-number" aria-hidden="true">1</span>
+        <div><h2 id="samples-heading">Python files</h2><p>Choose a sample to load.</p></div>
+      </div>
+      <div class="sample-group good">
+        <h3>Baseline</h3>
+        <div class="sample-list">
+          <button class="sample-file" type="button" data-sample="normal" data-label="Ordinary module" aria-pressed="false" disabled><strong>normal.py</strong><small>Ordinary module · passes defaults</small></button>
+        </div>
+      </div>
+      <div class="sample-group bad">
+        <h3>Ruff parser cases</h3>
+        <div class="sample-list">
+          <button class="sample-file" type="button" data-sample="ruff_class_pattern" data-label="Ruff class-pattern crash" aria-pressed="false" disabled><strong>ruff_class_pattern.py</strong><small>Stack overflow in Ruff 0.17.2</small></button>
+          <button class="sample-file" type="button" data-sample="ruff_grouping" data-label="Ruff parser recursion" aria-pressed="false" disabled><strong>ruff_grouping.py</strong><small>Historical 5,000-parenthesis case</small></button>
+        </div>
+      </div>
+      <div class="sample-group bad">
+        <h3>CPython parser failures</h3>
+        <div class="sample-list">
+          <button class="sample-file" type="button" data-sample="cpython_nesting" data-label="CPython nesting error" aria-pressed="false" disabled><strong>cpython_nesting.py</strong><small>Too many nested parentheses</small></button>
+          <button class="sample-file" type="button" data-sample="deep_indentation" data-label="CPython indentation error" aria-pressed="false" disabled><strong>deep_indentation.py</strong><small>Too many indentation levels</small></button>
+          <button class="sample-file" type="button" data-sample="cpython_unary_memory" data-label="CPython memory failure" aria-pressed="false" disabled><strong>cpython_unary_memory.py</strong><small>Unary chain · observed MemoryError</small></button>
+        </div>
+      </div>
+      <p class="sample-help">These cases come from observed parser failures or a documented Ruff issue. Loading restores default limits and never runs the check.</p>
+    </aside>
+
+    <div class="work-area">
+    <section class="panel" aria-labelledby="screen-heading">
+      <div class="step-heading">
+        <span class="step-number" aria-hidden="true">2</span>
+        <div><h2 id="screen-heading">Set limits and check source</h2><p>Adjust the budgets, then run the check against the source below.</p></div>
+      </div>
+      <div class="limits" aria-labelledby="limits-heading">
+        <div class="limits-head"><h3 id="limits-heading">Limits for this check</h3><button class="reset" id="reset-limits" type="button" disabled>Restore defaults</button></div>
+        <div class="limits-grid">
+          <label for="limit-nesting">Parser nesting<input id="limit-nesting" type="number" min="0" step="1" required disabled><small>Caps simultaneous parser frames.</small></label>
+          <label for="limit-ast">Estimated AST depth<input id="limit-ast" type="number" min="0" step="1" required disabled><small>Catches chains that build deep trees.</small></label>
+          <label for="limit-annotations">Quoted annotation depth<input id="limit-annotations" type="number" min="0" step="1" required disabled><small>Caps rescans inside quoted type hints.</small></label>
+        </div>
+        <details class="limits-secondary">
+          <summary>Other limits: source size, tokens, indentation</summary>
+          <div class="limits-grid">
+            <label for="limit-source">Source size (KiB)<input id="limit-source" type="number" min="0" step="1" required disabled><small>Rejects oversized files before scanning.</small></label>
+            <label for="limit-tokens">Tokens<input id="limit-tokens" type="number" min="0" step="1" required disabled><small>Caps long streams of small tokens.</small></label>
+            <label for="limit-indentation">Indentation levels<input id="limit-indentation" type="number" min="0" step="1" required disabled><small>Counts open blocks, not total lines.</small></label>
+          </div>
+        </details>
+        <p class="limits-note" id="limits-note">Loading default limits…</p>
+        <p class="limits-note"><a href="https://github.com/jaheba/tokspam/blob/main/docs/LIMITS.md" target="_blank" rel="noopener noreferrer">How the limits work</a></p>
+        <p class="limits-error" id="limits-error" role="alert" hidden></p>
+      </div>
+      <label for="source">Python source</label>
+      <div class="editor" id="editor">
+        <pre class="line-numbers" id="line-numbers" aria-hidden="true">1</pre>
+        <div class="code-pane">
+          <pre class="code-layer" id="code-layer" aria-hidden="true"></pre>
+          <textarea class="code-input" id="source" wrap="off" spellcheck="false" aria-label="Python source" placeholder="Load an example above or paste Python source here…"></textarea>
+        </div>
+      </div>
+      <div class="editor-footer">
+        <span class="source-status" id="source-status">No source loaded</span>
+        <button class="run" id="check" type="button" disabled>Loading WebAssembly…</button>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="result-heading">
+      <div class="step-heading">
+        <span class="step-number" aria-hidden="true">3</span>
+        <div><h2 id="result-heading">Limit check result</h2><p>Loading or editing source clears the previous result.</p></div>
+      </div>
+      <div class="result" id="result" data-state="idle" role="status" aria-live="polite">
+        <strong id="result-title">Not checked yet</strong>
+        <p id="result-detail">Load an example or enter source, then press Check limits.</p>
+        <p class="result-meta" id="result-meta"></p>
+        <div class="result-insights" id="result-insights" hidden>
+          <div class="result-facts">
+            <div><span>Validation</span><strong id="result-rule"></strong></div>
+            <div><span>Configured limit</span><strong id="result-limit"></strong></div>
+            <div><span>Location</span><strong id="result-location"></strong></div>
+          </div>
+          <div class="result-context" id="result-context" hidden>
+            <div class="context-heading"><span>Source near rejection</span><button class="jump" id="jump" type="button">Show in editor</button></div>
+            <pre class="excerpt" id="result-excerpt"><code></code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+    </div>
+  </main>
+
+  <p class="note">The six controls above use Tokspam’s default values until you change them. Other library limits keep their defaults. Timing measures one Wasm scan after source encoding and copying, so browser results vary. Ranges refer to UTF-8 bytes.</p>
   <script type="module" src="./demo.js"></script>
 </body>
 </html>

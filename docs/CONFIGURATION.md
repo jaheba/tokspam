@@ -6,20 +6,20 @@ quoted annotations interpreted as Python. Exhausting that budget returns `Reason
 specific structural violation.
 `check` returns a reason and a byte range for rejected input.
 For repeated use, create a `Checker` once per worker.
-For fixed `Limits`, allocated scratch memory is constant with respect to input
-length and structure. Capacities depend on configuration and fixed implementation
-ceilings; input cannot grow them. The borrowed source itself is not scratch memory.
-`Checker::new(limits)` validates the configuration but allocates no scratch buffers.
-The first non-oversized check reserves all storage from the limits before token
-scanning. `Checker::preallocated(limits)` performs that reservation immediately,
-so even its first check performs zero heap allocations. Both modes retain capacity
-after each scan and rejection; later scans allocate nothing. Resetting clears
-lengths, segment bases, and scalar tracking state, without shrinking buffers.
-The one-shot `check` constructs and drops a lazy checker on each call.
-Most capacities follow configured limits; width tracking reserves its hard capacity because unfinished
+For fixed `Limits`, scratch-memory ceilings are independent of input length and
+structure. `Checker::new(limits)` starts with empty vectors, growing them on demand
+within those ceilings. `Checker::preallocated(limits)` reserves the complete bound
+immediately; even its first check performs zero heap allocations.
+Both modes retain capacity after scans and rejections. Resetting clears lengths,
+segment bases, and scalar tracking state, without shrinking buffers. Growing mode
+may allocate for a later input that needs additional space. Growth is geometric,
+capped explicitly rather than letting `Vec` double beyond its configured ceiling.
+The borrowed source itself is not scratch memory. The one-shot `check` creates
+and drops a growing checker on each call.
+Most ceilings follow configured limits; width tracking uses its hard ceiling because unfinished
 lambda parameter lists can accumulate before parser depth is charged. Compact stack entries and shared annotation
 segments keep the memory savings independent of the backing storage.
-On the measured 64-bit target, `size_of::<Checker>()` is 472 bytes. Initialized scratch requests total 25,578 bytes at default
+On the measured 64-bit target, `size_of::<Checker>()` includes vector metadata and growth ceilings. Preallocated scratch requests total 25,578 bytes at default
 limits and 90,182 bytes at maximum structural and annotation depths, in eight allocations. These figures exclude
 allocator overhead and the borrowed source.
 
