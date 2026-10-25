@@ -5,7 +5,7 @@
 //! `simple_lines` and the optional `region` module prove conservative shortcuts.
 //! All paths share the same cursor and bounded segmented scratch storage.
 
-use crate::stack::{Mark, STRUCTURAL_CAPACITY, Stack};
+use crate::stack::{Mark, Stack};
 
 mod bytes;
 mod code;
@@ -20,10 +20,6 @@ mod token;
 
 use bytes::{BYTE_CLASSES, NAME_BYTE, NUMBER_BYTE};
 pub use token::{Kind, Token};
-
-// A tab contributes at most eight columns per source byte; indentation storage
-// uses u32 columns under this hard source-size ceiling.
-const _: () = assert!(crate::MAX_SOURCE_BYTES <= u32::MAX as usize / 8);
 
 #[derive(Clone, Copy, Default)]
 enum Context {
@@ -52,8 +48,8 @@ enum Context {
 // the active base. Marks are indices, so growing Vecs may relocate safely.
 #[derive(Default)]
 pub(super) struct LexerScratch {
-    contexts: Stack<Context, STRUCTURAL_CAPACITY>,
-    indents: Stack<u32, STRUCTURAL_CAPACITY>,
+    contexts: Stack<Context>,
+    indents: Stack<usize>,
 }
 
 // Save only cursor state when an annotation suspends this lexer. The caller
@@ -66,6 +62,7 @@ pub(super) struct LexerState {
     // until the iterator has returned them all, without rescanning whitespace.
     pending_indent: Option<usize>,
     stopped: bool,
+    storage_failed: bool,
 }
 
 impl LexerScratch {
@@ -74,6 +71,10 @@ impl LexerScratch {
             contexts: Stack::with_storage(contexts, preallocated),
             indents: Stack::with_storage(indents, preallocated),
         }
+    }
+
+    pub(super) fn failed(&self) -> bool {
+        self.contexts.failed() || self.indents.failed()
     }
 
     pub(super) fn suspend(&mut self) -> [Mark; 2] {
@@ -94,13 +95,14 @@ impl LexerScratch {
 pub struct Lexer<'a, 's> {
     source: &'a str,
     position: usize,
-    contexts: &'s mut Stack<Context, STRUCTURAL_CAPACITY>,
-    indents: &'s mut Stack<u32, STRUCTURAL_CAPACITY>,
+    contexts: &'s mut Stack<Context>,
+    indents: &'s mut Stack<usize>,
     line_start: bool,
     pending_indent: Option<usize>,
     limit: usize,
     indentation_limit: usize,
     stopped: bool,
+    storage_failed: bool,
 }
 
 impl<'a, 's> Lexer<'a, 's> {
@@ -113,9 +115,9 @@ impl<'a, 's> Lexer<'a, 's> {
         // Clear only the active segment; a suspended parent's entries remain
         // intact below its base when this starts an annotation child scan.
         scratch.contexts.clear();
-        scratch.contexts.push(Context::Root);
+        let context_ok = scratch.contexts.push(Context::Root);
         scratch.indents.clear();
-        scratch.indents.push(0);
+        let indent_ok = scratch.indents.push(0);
 
         Self {
             source,
@@ -126,7 +128,8 @@ impl<'a, 's> Lexer<'a, 's> {
             pending_indent: None,
             limit,
             indentation_limit,
-            stopped: false,
+            stopped: !context_ok || !indent_ok,
+            storage_failed: !context_ok || !indent_ok,
         }
     }
 
@@ -147,6 +150,7 @@ impl<'a, 's> Lexer<'a, 's> {
             limit,
             indentation_limit,
             stopped: state.stopped,
+            storage_failed: state.storage_failed,
         }
     }
 
@@ -156,7 +160,19 @@ impl<'a, 's> Lexer<'a, 's> {
             line_start: self.line_start,
             pending_indent: self.pending_indent,
             stopped: self.stopped,
+            storage_failed: self.storage_failed,
         }
+    }
+
+    pub(super) fn depths(&self) -> (usize, usize) {
+        (
+            self.contexts.len().saturating_sub(1),
+            self.indents.len().saturating_sub(1),
+        )
+    }
+
+    pub(super) fn storage_failed(&self) -> bool {
+        self.storage_failed
     }
 
     fn token(&self, kind: Kind, start: usize) -> Token {
@@ -178,8 +194,13 @@ impl<'a, 's> Lexer<'a, 's> {
             self.stopped = true;
             false
         } else {
-            self.contexts.push(context);
-            true
+            if !self.contexts.push(context) {
+                self.stopped = true;
+                self.storage_failed = true;
+                false
+            } else {
+                true
+            }
         }
     }
 }

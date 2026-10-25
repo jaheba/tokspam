@@ -1,205 +1,106 @@
-# tokspam
+# Tokspam
 
-Tokspam is a Rust library that screens Python source before it reaches a parser.
-It provides a first layer of resource checks for applications that accept
-untrusted or generated Python code. It is designed for fast preflight screening,
-with a scratch-memory ceiling determined by its configured limits.
+Tokspam measures structural complexity in Python source without building an AST.
+Use it to inspect generated code, compare source shapes, or apply optional limits
+before sending input to a parser.
 
-## Why check before parsing?
+A short expression can still create a deep tree or retain many parser frames:
+nested containers, unary operators, attribute chains, and quoted type expressions
+all put pressure on different parts of a parser. Source size alone misses these
+shapes. Tokspam reports counts and depth estimates that make them visible.
 
-Parsing untrusted code is itself a resource-sensitive operation. Some source
-shapes can exhaust a parser's call stack or produce an AST that is too deep to
-traverse or free safely. This can happen with valid Python, before any of it
-executes. Malformed input can also stress recursive error-recovery paths before
-the parser returns a syntax error.
+```rust
+use tokspam::analyze;
 
-A bracket-depth limit catches obvious nesting, but misses other shapes:
-
-```python
-f(g(h(value)))       # Nested calls can retain parser frames.
-value.attr.attr.attr # Flat-looking source can build a deep AST.
-a + b + c + d        # Left-associated operators also build a nested tree.
+let report = analyze("result = a + b + c");
+assert!(report.is_complete());
+assert_eq!(report.scores.ast_depth, 2);
 ```
 
-At large enough scales, these can turn a parse request into a process failure or
-excessive resource use. A runtime instruction budget cannot help if parsing fails
-before execution starts.
+## What it measures
 
-Tokspam addresses this with a bounded structural scan before the parser runs.
-It rejects inputs whose estimated complexity exceeds your budgets, without
-constructing the AST that might cause the problem. This adds a first layer of
-protection alongside the parser's own checks and the host's resource controls.
+The streaming lexer emits source ranges, without decoding literals or collecting
+all tokens. Structural trackers maintain open levels and operator state. They
+estimate parser recursion and AST depth, preserving the maximum across sibling
+expressions rather than adding their independent heights.
 
-## Who is it for?
+Reports contain source bytes, cumulative scanned bytes and tokens, largest token,
+lexical context depth, indentation depth, estimated parser and AST depths,
+quoted-annotation depth, and maximum argument, parameter, display, slice, and
+interpolation-field counts. Lexical context depth includes string and replacement
+field modes as well as brackets.
 
-Tokspam is for Rust applications that embed a Python interpreter, offer a Python
-playground, or parse user-submitted code for analysis. Place it before each parser
-entry point, including source generated for `eval()` or `exec()`.
+Quoted types are scanned using an explicit work stack. A child scan inherits its
+parent's remaining structural budget, and its tokens and bytes contribute to the
+same cumulative work count. `Literal` values and `Annotated` metadata are excluded
+using lexical names; Tokspam does not resolve aliases or decode string escapes.
 
-It lets you reject inputs that exceed your resource budgets before paying the
-cost of parsing them. Limits cover source size, tokens, nesting, indentation,
-estimated AST depth, and cumulative scanning work.
+These scores describe Tokspam's lexical model. Tokspam does not validate full
+Python syntax, execute source, or guarantee that a particular parser will handle
+accepted input safely. A malformed lexical structure can stop measurement.
 
-See [what each limit does](docs/LIMITS.md) for the rationale and tradeoffs behind every setting.
+## Optional limits
 
-## Efficiency
-
-Tokspam uses a streaming, byte-oriented lexer and compact structural accounting.
-It builds neither an AST nor a token list, uses optimized byte searches to skip
-literal text, and stops as soon as a budget is exceeded. Ordinary scanning is
-linear in the bytes and tokens processed; annotation rescans share a bounded work
-budget.
-
-**The scratch-memory ceiling depends on `Limits`, not input length.** By default,
-buffers start empty and grow on demand, up to that ceiling. For a fixed allocated
-footprint and allocation-free checks, opt into `Checker::preallocated(limits)`.
-The source is borrowed, so its storage remains the caller's responsibility.
-
-Both modes retain buffer capacity between checks. Growing mode may allocate when
-a new input needs more space; preallocated mode reserves everything up front and
-never allocates while scanning.
-
-## Usage
-
-The crate is named `tokspam`. Create a reusable checker with limits suited to your
-application, then pass accepted source to your parser:
+Every score threshold is optional. `Limits::default()` enables no thresholds;
+there are no library-imposed configuration ceilings. Use a reusable `Checker`
+when applying a policy to many inputs:
 
 ```rust
 use tokspam::{Checker, Limits};
 
-fn main() -> Result<(), tokspam::Rejection> {
-    let limits = Limits {
-        max_source_bytes: 256 * 1024,
-        max_nesting_depth: 80,
-        max_ast_depth: Some(80),
-        ..Limits::default()
-    };
-    let mut checker = Checker::new(limits).expect("valid limits");
-    let source = "x = [1, 2, 3]";
+let mut checker = Checker::new(Limits {
+    max_ast_depth: Some(80),
+    max_call_arguments: Some(200),
+    ..Limits::default()
+});
 
-    checker.check(source)?;
-    // Pass source to your Python parser here.
-    Ok(())
-}
+checker.check("f(1, 2)").unwrap();
+let report = checker.analyze("a + b + c");
+assert!(report.is_complete());
+assert_eq!(report.scores.ast_depth, 2);
 ```
 
-A rejection includes a reason and a byte range. Reuse one `Checker` per worker.
-`Checker::new(limits)` starts with empty vectors. Checks grow them only as needed,
-within configured bounds, and retain that capacity for later inputs. Oversized
-inputs are rejected before initializing scratch storage.
+`check` stops at the first exceeded threshold and omits unused score collection.
+It retains conservative shortcuts for simple input. `analyze` performs detailed
+measurement, stopping at configured thresholds if supplied. `Limits::screening()`
+is an explicit starting policy with thresholds; tune it for your downstream parser.
 
-To avoid allocations during checks, opt into full preallocation:
+## Memory and incomplete reports
+
+Growing storage is the default. Scratch grows fallibly with structural complexity
+and is reused between calls. Removing score limits does **not** imply constant
+memory: measuring arbitrary nesting needs storage for the open levels.
+
+For allocation-free scans, select fixed storage explicitly:
 
 ```rust
-let mut checker = tokspam::Checker::preallocated(tokspam::Limits::default())
-    .expect("valid limits");
-checker.check("x = 1").expect("source within limits");
+use tokspam::{Checker, Limits, Storage};
+
+let mut checker = Checker::with_storage(
+    Limits::default(),
+    Storage::Fixed { capacity: 256 },
+).unwrap();
+
+let report = checker.analyze("x = [1, 2]");
+assert!(report.is_complete());
 ```
 
-Each scan clears the buffers' logical contents and tracking state, including after
-a previous rejection. It retains their capacity without shrinking. Default buffers
-can grow for more demanding inputs; preallocated buffers never need to grow.
-The one-off `tokspam::check` creates and drops a lazy checker on each call.
+The capacity is an entry count **per scratch stack**, independent of score limits.
+It is reserved during construction; scans cannot allocate additional scratch.
+Exhausting it yields `Reason::Storage`, not a complexity violation.
 
-For larger package files, `Limits::package_sources()` increases the source and
-token budgets while keeping the default structural limits. See
-[configuration](docs/CONFIGURATION.md) for details.
+Always inspect `report.is_complete()` or `report.stopped`. A threshold, work-budget
+exhaustion, storage failure, unsupported lexical structure, or accounting overflow
+can stop a scan. Partial maxima are lower bounds on the model's completed scores;
+`source_bytes` always describes the entire input.
 
-## How it detects problematic source
+## Validation and details
 
-Tokspam streams tokens into a structural scanner, maintaining separate estimates
-for parser recursion and AST depth. It does not need a complete parse to identify
-these resource patterns.
+Tests cover structural rules, malformed and Unicode input, quoted annotations,
+score boundaries, buffer reuse, and allocation behavior. Previous parser and
+library campaigns live in [tokspam-fuzzer](https://github.com/jaheba/tokspam-fuzzer);
+their results apply to the tested revisions, versions, and conditions.
 
-### Estimate retained parser frames
-
-The scanner tracks open delimiters and indentation, plus constructs that can
-retain recursive expression frames: prefix and right-associative operators,
-lambda and conditional bodies, and nested f-string format fields. It releases
-those charges at the boundaries that finish the relevant expression or block.
-
-This is about simultaneous depth, not total syntax. In `f(a, b, c)`, the arguments
-are siblings; in `f(g(h(x)))`, their nesting accumulates. An oversized input can
-be rejected as soon as the retained-depth estimate exceeds the configured limit.
-
-### Account for deep ASTs even when parsing is shallow
-
-Closing a parser frame does not necessarily remove its contribution to the AST.
-Each attribute access, call, or subscript can wrap the preceding expression.
-Tokspam retains that contribution when estimating tree depth.
-
-For binary operators it tracks precedence and operand heights. Combining two
-subtrees contributes the larger child height plus the operator node; sibling
-heights are not simply added together. Expression boundaries reset local state,
-while a completed nested expression carries its peak height back to its parent.
-Flat `elif` chains also need accounting because Python represents them as nested
-`If` nodes.
-
-This catches long chains without treating every operator in a file as part of
-one growing expression. It remains a structural estimate rather than an exact
-AST measurement.
-
-### Screen source hidden in quoted annotations
-
-Downstream tools may interpret a quoted annotation such as
-`item: "list[list[int]]"` as another Python expression. Tokspam recognizes likely
-type positions and screens relevant string contents using the remaining depth
-budget. It distinguishes type operands from `Annotated` metadata and `Literal`
-values using lexical names; it does not resolve aliases or decode escapes.
-
-Nested annotation scans share byte and token budgets. Reinterpreting string
-contents charges work again, preventing nested strings from multiplying the
-permitted scanning work unchecked.
-
-### Bound width, total work, and the checker itself
-
-Depth limits alone cannot bound a large flat input. Tokspam also limits source
-bytes, tokens, and cumulative scan work, with optional width limits for arguments,
-parameters, displays, subscripts, and interpolation fields. Exhausting the scan
-work budget returns `Inconclusive`, rather than asserting a specific structural
-violation.
-
-The scan builds neither an AST nor a token list. Simple unindented lines can use
-a conservative byte-based fast path; other input uses detailed structural
-accounting. Bounded reusable buffers cap scratch memory, and an explicit annotation
-work stack keeps native call-stack depth independent of source nesting.
-
-## Testing and compatibility
-
-Tokspam is tested against real-world Python libraries as well as deliberately
-hostile input. Recorded whole-library sweeps using `Limits::package_sources()`
-accepted all **2,437 Python files from PyTorch 2.14.1** and **2,057 files from
-CPython 3.15.1's `Lib/`, including its tests**. Three intentionally invalid
-encoding fixtures were excluded before screening. An earlier calibration also
-accepted all 2,955 retained files from CPython 3.15, Monty, and Pydantic.
-
-Validation combines:
-
-- **Focused regressions** for limit boundaries, operator precedence, Unicode,
-  malformed source, annotations, and checker reuse after rejection. Allocation
-  tests verify bounded growth, capacity reuse, and allocation-free preallocated checks.
-- **Generated parser comparisons** against CPython and Ruff, with retained
-  reproducers for crashes, resource failures, and conservative rejections.
-- **Over six million fuzz executions** across raw-source/configuration and
-  grammar-guided targets under AddressSanitizer, with no crash or sanitizer
-  finding in the recorded extended campaign.
-
-These are source-screening results, not claims about importing or running those
-libraries. The [library compatibility report](https://github.com/jaheba/tokspam-fuzzer/blob/main/corpus/library-suites/README.md),
-[calibration results](https://github.com/jaheba/tokspam-fuzzer/blob/main/campaigns/2026-10-24-calibration/SUMMARY.md),
-and [fuzzing report](https://github.com/jaheba/tokspam-fuzzer/blob/main/campaigns/2026-10-24-shared-scratch-long-fuzz/SUMMARY.md)
-record the tested versions, profiles, inputs, and conditions.
-
-## Scope
-
-Tokspam complements your parser's limits and your host's time and memory controls.
-It does not validate Python syntax or restrict what a program can do. Acceptance
-does not guarantee downstream parser safety, and conservative checks can reject
-valid Python.
-
-See [configuration](docs/CONFIGURATION.md) for available limits and
-[safety requirements](docs/SAFETY.md) for the implemented bounds and their limits.
-Corpus generators, parser comparisons, fuzzing, and benchmarks live in
-[`tokspam-fuzzer`](https://github.com/jaheba/tokspam-fuzzer).
-
-Licensed under [MIT](LICENSE).
+See [configuration](docs/CONFIGURATION.md), [score definitions](docs/LIMITS.md),
+[implementation](docs/INTERNALS.md), and [safety requirements](docs/SAFETY.md).
+The [browser demo](https://jaheba.github.io/tokspam/) demonstrates limit checking.

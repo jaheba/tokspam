@@ -1,8 +1,8 @@
 //! Syntactic width limits and capacity-only tracking when those limits are disabled.
 
 use crate::lexer::Kind;
-use crate::stack::{STRUCTURAL_CAPACITY, Stack};
-use crate::{Limits, MAX_TOKENS, Reason};
+use crate::stack::Stack;
+use crate::{Limits, Reason, Scores};
 use std::ops::Range;
 
 #[derive(Clone, Copy)]
@@ -17,20 +17,17 @@ enum WidthKind {
     Ignore,
 }
 
-const _: () = assert!(MAX_TOKENS <= u32::MAX as usize);
-
 pub(super) struct WidthFrame {
     kind: WidthKind,
-    // Counts cannot exceed the shared hard token budget (including malformed
-    // input); u32 retains the full range without pointer-sized counters.
-    items: u32,
+    // Use full-size counters: optional score thresholds impose no small ceiling.
+    items: usize,
     // Commas finalize items; the closing delimiter charges a nonempty final
     // item. This avoids counting empty constructs or trailing commas twice.
     seen_item: bool,
     has_comma: bool,
     marker_only: bool,
     comprehension: bool,
-    adjacent_fields: u32,
+    adjacent_fields: usize,
 }
 
 impl Default for WidthFrame {
@@ -50,7 +47,7 @@ impl Default for WidthFrame {
 // Classify delimiters lexically so nested contents count as one parent item.
 // This estimates construct widths without validating Python's full grammar.
 pub(super) struct WidthTracker {
-    pub(super) frames: Stack<WidthFrame, STRUCTURAL_CAPACITY>,
+    pub(super) frames: Stack<WidthFrame>,
     pub(super) state: WidthState,
 }
 
@@ -59,19 +56,14 @@ pub(super) struct WidthState {
     previous_ends_operand: bool,
     pending_def: bool,
     pending_non_call: bool,
-    root_adjacent_fields: u32,
+    root_adjacent_fields: usize,
 }
 
 impl WidthTracker {
-    #[cfg(test)]
-    fn new() -> Self {
-        Self::with_storage(true)
-    }
-
     #[inline]
-    pub(super) fn with_storage(preallocated: bool) -> Self {
+    pub(super) fn with_storage(capacity: usize, preallocated: bool) -> Self {
         Self {
-            frames: Stack::with_storage(STRUCTURAL_CAPACITY, preallocated),
+            frames: Stack::with_storage(capacity, preallocated),
             state: WidthState::default(),
         }
     }
@@ -85,67 +77,14 @@ impl WidthTracker {
         self.state.root_adjacent_fields = 0;
     }
 
-    // With all width limits disabled, item counts and display classifications
-    // cannot reject. Preserve only the same frame openings/closures and hard
-    // capacity guard, including unfinished lambda parameters on malformed input.
     #[inline]
-    pub(super) fn observe_capacity(
-        &mut self,
-        source: &str,
-        kind: Kind,
-        range: &Range<usize>,
-    ) -> Option<Reason> {
-        if kind == Kind::Name && &source[range.clone()] == "def" {
-            self.state.pending_def = true;
-        }
-        let parameters = kind == Kind::Lambda || (kind == Kind::Lpar && self.state.pending_def);
-        if matches!(
-            kind,
-            Kind::Lambda | Kind::Lpar | Kind::Lsqb | Kind::Lbrace | Kind::FStringStart
-        ) {
-            if kind == Kind::Lpar {
-                self.state.pending_def = false;
-            }
-            if self.frames.is_full() {
-                return Some(Reason::Inconclusive);
-            }
-            self.frames.push(WidthFrame {
-                kind: if parameters {
-                    WidthKind::Parameters
-                } else {
-                    WidthKind::Ignore
-                },
-                items: 0,
-                seen_item: false,
-                has_comma: false,
-                marker_only: false,
-                comprehension: false,
-                adjacent_fields: 0,
-            });
-        } else if matches!(
-            kind,
-            Kind::Rpar | Kind::Rsqb | Kind::Rbrace | Kind::FStringEnd
-        ) || (kind == Kind::Colon
-            && self
-                .frames
-                .last()
-                .is_some_and(|frame| matches!(frame.kind, WidthKind::Parameters)))
-        {
-            self.frames.pop();
-        }
-        if matches!(kind, Kind::Newline | Kind::Semi | Kind::Colon) {
-            self.state.pending_def = false;
-        }
-        None
-    }
-
-    #[inline]
-    pub(super) fn observe(
+    pub(super) fn observe<const COLLECT: bool>(
         &mut self,
         source: &str,
         kind: Kind,
         range: &Range<usize>,
         limits: &Limits,
+        scores: &mut Scores,
     ) -> Option<Reason> {
         if kind == Kind::Name && &source[range.clone()] == "def" {
             self.state.pending_def = true;
@@ -177,9 +116,12 @@ impl WidthTracker {
             {
                 if let Some(parent) = self.frames.last_mut() {
                     parent.items += 1;
+                    if COLLECT {
+                        scores.interpolation_fields = scores.interpolation_fields.max(parent.items);
+                    }
                     if limits
                         .max_interpolation_fields
-                        .is_some_and(|limit| parent.items as usize > limit)
+                        .is_some_and(|limit| parent.items > limit)
                     {
                         return Some(Reason::InterpolationFields);
                     }
@@ -191,13 +133,6 @@ impl WidthTracker {
         };
 
         if let Some(opened) = opened {
-            // Unfinished lambda parameter lists can accumulate before their
-            // colons charge parser depth. Stop at fixed scratch capacity rather
-            // than asserting a structural violation we have not established.
-            if self.frames.is_full() {
-                return Some(Reason::Inconclusive);
-            }
-
             // Python folds adjacent string literals into one expression. Carry
             // interpolation counts across that boundary, but not other operands.
             let adjacent_fields = if matches!(opened, WidthKind::FString) {
@@ -217,7 +152,7 @@ impl WidthTracker {
             if let Some(parent) = self.frames.last_mut() {
                 parent.seen_item = true;
             }
-            self.frames.push(WidthFrame {
+            if !self.frames.push(WidthFrame {
                 kind: opened,
                 items: adjacent_fields,
                 seen_item: false,
@@ -225,7 +160,9 @@ impl WidthTracker {
                 marker_only: false,
                 comprehension: false,
                 adjacent_fields: 0,
-            });
+            }) {
+                return Some(Reason::Storage);
+            }
         } else if kind == Kind::Comma {
             if let Some(frame) = self.frames.last_mut() {
                 frame.has_comma = true;
@@ -234,6 +171,9 @@ impl WidthTracker {
                 }
                 frame.seen_item = false;
                 frame.marker_only = false;
+                if COLLECT {
+                    frame.record(scores);
+                }
                 if let Some(reason) = frame.exceeded(limits) {
                     return Some(reason);
                 }
@@ -252,7 +192,10 @@ impl WidthTracker {
                     frame.kind,
                     WidthKind::FString | WidthKind::Interpolation { .. }
                 ) {
-                    frame.items += u32::from(frame.seen_item && !frame.marker_only);
+                    frame.items += usize::from(frame.seen_item && !frame.marker_only);
+                }
+                if COLLECT {
+                    frame.record(scores);
                 }
                 if let Some(reason) = frame.exceeded(limits) {
                     return Some(reason);
@@ -331,6 +274,20 @@ impl WidthTracker {
 }
 
 impl WidthFrame {
+    fn record(&self, scores: &mut Scores) {
+        let score = match self.kind {
+            WidthKind::Call => &mut scores.call_arguments,
+            WidthKind::Parameters => &mut scores.parameters,
+            WidthKind::Display if !self.comprehension => &mut scores.display_items,
+            WidthKind::Parenthesized if self.has_comma => &mut scores.display_items,
+            WidthKind::Slice if self.has_comma => &mut scores.slice_items,
+            WidthKind::FString | WidthKind::Interpolation { .. } => {
+                &mut scores.interpolation_fields
+            }
+            _ => return,
+        };
+        *score = (*score).max(self.items);
+    }
     fn exceeded(&self, limits: &Limits) -> Option<Reason> {
         let (limit, reason) = match self.kind {
             WidthKind::Call => (limits.max_call_arguments, Reason::CallArguments),
@@ -350,106 +307,7 @@ impl WidthFrame {
             | WidthKind::Ignore => return None,
         };
         limit
-            .is_some_and(|limit| self.items as usize > limit)
+            .is_some_and(|limit| self.items > limit)
             .then_some(reason)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn compare(
-        full: &mut WidthTracker,
-        capacity: &mut WidthTracker,
-        kind: Kind,
-        text: &str,
-    ) -> bool {
-        let range = 0..text.len();
-        let expected = full.observe(text, kind, &range, &Limits::default());
-        let actual = capacity.observe_capacity(text, kind, &range);
-        assert_eq!(actual, expected, "{kind:?} {text:?}");
-        assert_eq!(capacity.frames.len(), full.frames.len());
-        assert_eq!(capacity.state.pending_def, full.state.pending_def);
-        assert!(
-            capacity
-                .frames
-                .iter()
-                .zip(full.frames.iter())
-                .all(|(a, b)| {
-                    matches!(a.kind, WidthKind::Parameters)
-                        == matches!(b.kind, WidthKind::Parameters)
-                })
-        );
-        expected.is_some()
-    }
-
-    #[test]
-    fn capacity_only_tracking_matches_full_tracking_without_width_limits() {
-        let alphabet = [
-            (Kind::Name, "def"),
-            (Kind::Name, "class"),
-            (Kind::Name, "import"),
-            (Kind::Name, "x"),
-            (Kind::Name, "π"),
-            (Kind::Lambda, "lambda"),
-            (Kind::Lpar, "("),
-            (Kind::Lsqb, "["),
-            (Kind::Lbrace, "{"),
-            (Kind::Rpar, ")"),
-            (Kind::Rsqb, "]"),
-            (Kind::Rbrace, "}"),
-            (Kind::Colon, ":"),
-            (Kind::Comma, ","),
-            (Kind::Equal, "="),
-            (Kind::Newline, "\n"),
-            (Kind::Semi, ";"),
-            (Kind::Star, "*"),
-            (Kind::Slash, "/"),
-            (Kind::For, "for"),
-            (Kind::String, "'x'"),
-            (Kind::FStringStart, "f'"),
-            (Kind::FStringEnd, "'"),
-        ];
-        let mut random = 42u64;
-        let mut full = WidthTracker::new();
-        let mut capacity = WidthTracker::new();
-        for _ in 0..1000 {
-            full.frames.reset();
-            capacity.frames.reset();
-            full.reset();
-            capacity.reset();
-            for _ in 0..256 {
-                random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let (kind, text) = alphabet[(random >> 32) as usize % alphabet.len()];
-                if compare(&mut full, &mut capacity, kind, text) {
-                    break;
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn capacity_only_tracking_preserves_shared_annotation_capacity() {
-        let mut full = WidthTracker::new();
-        let mut capacity = WidthTracker::new();
-        for _ in 0..STRUCTURAL_CAPACITY - 2 {
-            assert!(!compare(&mut full, &mut capacity, Kind::Lambda, "lambda"));
-        }
-        let full_state = full.state;
-        let capacity_state = capacity.state;
-        let full_mark = full.frames.suspend();
-        let capacity_mark = capacity.frames.suspend();
-        full.reset();
-        capacity.reset();
-        assert!(!compare(&mut full, &mut capacity, Kind::Lpar, "("));
-        assert!(!compare(&mut full, &mut capacity, Kind::Lambda, "lambda"));
-        assert!(compare(&mut full, &mut capacity, Kind::Lpar, "("));
-        full.frames.restore(full_mark);
-        capacity.frames.restore(capacity_mark);
-        full.state = full_state;
-        capacity.state = capacity_state;
-        assert!(!compare(&mut full, &mut capacity, Kind::Colon, ":"));
-        assert!(!compare(&mut full, &mut capacity, Kind::Lpar, "("));
     }
 }

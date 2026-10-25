@@ -7,8 +7,10 @@ the bounds and the limits of the safety claims.
 
 ## Follow the source
 
-`src/lib.rs` reexports the public API. `src/limits.rs` validates configuration
-against hard ceilings, and `src/checker/mod.rs` owns the scan loop.
+`src/lib.rs` reexports the public API. `src/limits.rs` defines optional thresholds,
+`src/scores.rs` defines reports and storage policy, and `src/checker/mod.rs` owns
+the scan loop. Analysis specializes the loop to collect scores; checking compiles
+recording out and can use acceptance proofs.
 
 The checker rejects oversized source before initializing its scratch buffers.
 It then consumes the streaming lexer one token at a time. Tokens refer to byte
@@ -29,10 +31,11 @@ operand heights according to operator precedence: a binary node adds one to the
 larger child height, while independent sibling expressions do not accumulate.
 Scalar totals avoid repeatedly walking every open level for each token.
 
-`src/checker/widths.rs` counts items such as arguments and display elements when
-their optional limits are enabled. With those limits disabled, a smaller path
-still tracks frame capacity. Unfinished lambda parameter lists can retain frames
-before charging structural depth; ignoring them would remove a memory bound.
+`src/checker/widths.rs` counts items such as arguments and display elements during
+analysis or when their optional limits are enabled. With those limits disabled,
+checking omits width tracking altogether. Unfinished lambda parameter lists may
+retain frames before charging parser depth; the width tracker uses the same
+fallible growing or fixed storage as the rest of the scan.
 
 These are conservative lexical estimates, not a full Python grammar. Acceptance
 does not validate syntax or guarantee that every downstream parser is safe.
@@ -56,15 +59,16 @@ This avoids copying stacks or allocating a separate set for each annotation.
 Marks are indices, so growing a backing vector cannot invalidate them.
 
 Rejections inside quoted types point to the enclosing annotation in the original
-source. Exhausting work or scratch capacity returns `Inconclusive` when no
-structural violation has been established.
+source. Exhausting the optional work budget returns `Inconclusive`; scratch exhaustion
+returns `Storage`. Neither establishes a complexity violation.
 
 ## Reuse and allocation
 
 Every check resets logical state, including after rejection, while retaining
-allocated capacity. `Checker::new` grows buffers as needed up to their bounded
-ceilings. `Checker::preallocated` reserves all scratch at construction, so input
-cannot trigger allocations during scanning. Neither mode retains source strings.
+allocated capacity. `Checker::new` grows buffers fallibly as needed.
+`Storage::Fixed { capacity }` reserves an explicit entry count per stack at
+construction, so input cannot trigger allocations during scanning. Exhaustion
+returns an incomplete result. Neither mode retains source strings.
 
 ## Keep the common path small
 

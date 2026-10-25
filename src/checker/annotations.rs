@@ -1,14 +1,15 @@
 //! Locate likely type strings and distinguish type operands from metadata values.
 
+use crate::Reason;
 use crate::lexer::Kind;
-use crate::stack::{STRUCTURAL_CAPACITY, Stack};
+use crate::stack::Stack;
 use std::ops::Range;
 
 // Track likely annotation positions rather than parse type expressions.
 // Colons in slices, dictionaries, lambdas, and block headers need exclusions.
 #[derive(Default)]
 pub(super) struct AnnotationTracker {
-    pub(super) brackets: Stack<AnnotationBracket, STRUCTURAL_CAPACITY>,
+    pub(super) brackets: Stack<AnnotationBracket>,
     pub(super) state: AnnotationState,
 }
 
@@ -35,7 +36,7 @@ pub(super) struct AnnotationState {
     start_depth: Option<usize>,
     line_started: bool,
     block_header: bool,
-    pending_lambdas: u32,
+    pending_lambdas: usize,
     previous: Option<(Kind, usize)>,
     previous_name: AnnotationName,
 }
@@ -72,14 +73,19 @@ impl AnnotationTracker {
     // This runs for every token. Preserve specialization at the caller across
     // the module boundary, especially the common non-annotation path.
     #[inline(always)]
-    pub(super) fn observe(&mut self, source: &str, kind: Kind, range: &Range<usize>) {
+    pub(super) fn observe(
+        &mut self,
+        source: &str,
+        kind: Kind,
+        range: &Range<usize>,
+    ) -> Option<Reason> {
         if matches!(kind, Kind::Newline | Kind::Semi) {
             self.state.start_depth = None;
             self.state.line_started = false;
             self.state.block_header = false;
             self.state.previous = None;
             self.state.previous_name = AnnotationName::Other;
-            return;
+            return None;
         }
         if !self.state.line_started && !matches!(kind, Kind::Indent | Kind::Dedent) {
             self.state.line_started = true;
@@ -148,12 +154,14 @@ impl AnnotationTracker {
                 let value = !self.type_position()
                     || (kind == Kind::Lsqb
                         && matches!(self.state.previous_name, AnnotationName::Literal));
-                self.brackets.push(AnnotationBracket {
+                if !self.brackets.push(AnnotationBracket {
                     kind,
                     value,
                     annotated_type: kind == Kind::Lsqb
                         && matches!(self.state.previous_name, AnnotationName::Annotated),
-                });
+                }) {
+                    return Some(Reason::Storage);
+                }
             }
             Kind::Rpar | Kind::Rsqb | Kind::Rbrace => {
                 self.brackets.pop();
@@ -170,5 +178,6 @@ impl AnnotationTracker {
         } else {
             AnnotationName::Other
         };
+        None
     }
 }

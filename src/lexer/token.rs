@@ -63,6 +63,7 @@ pub enum Kind {
     Equal,
     Other,
     Limit,
+    StorageLimit,
     NestingLimit,
     IndentationLimit,
 }

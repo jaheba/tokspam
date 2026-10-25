@@ -12,14 +12,18 @@ pub enum Reason {
     AstDepth,
     LexicalStructure,
     QuotedAnnotation,
-    Configuration,
+    /// Scratch capacity or allocation was exhausted; no score violation implied.
+    Storage,
+    /// Accounting could not be represented without overflow.
+    Overflow,
+    DelimiterDepth,
     CallArguments,
     Parameters,
     DisplayItems,
     SliceItems,
     InterpolationFields,
-    /// Screening exhausted its work budget or bounded tracking capacity before
-    /// establishing a structural violation.
+    /// The optional cumulative work budget was exhausted before establishing
+    /// a structural violation. Storage exhaustion is reported separately.
     Inconclusive,
 }
 

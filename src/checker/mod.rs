@@ -12,39 +12,24 @@ mod tests;
 mod widths;
 
 use crate::lexer::{Kind, Lexer, LexerState};
-use crate::stack::{SCAN_FRAMES, Stack};
-use crate::{ConfigError, Limits, Reason, Rejection};
-use scratch::{SavedScratch, ScanScratch, annotation_frames};
+use crate::stack::Stack;
+use crate::{Limits, Reason, Rejection, Report, Scores, Storage, StorageError};
+use scratch::{SavedScratch, ScanScratch};
 use std::ops::Range;
 
-/// Rejects source that exceeds the configured structural budgets.
-/// Successful screening does not validate Python syntax.
-/// Uses scratch that grows on demand within configured bounds.
-/// Use [`Checker`] to reuse scratch, or [`Checker::preallocated`] for allocation-free scans.
+/// Fast early-exit checking with caller-selected score thresholds.
 pub fn check(source: &str, limits: &Limits) -> Result<(), Rejection> {
-    if limits.validate().is_err() {
-        return Err(Rejection {
-            reason: Reason::Configuration,
-            range: 0..0,
-        });
-    }
-    if source.len() > limits.max_source_bytes {
-        return Err(Rejection {
-            reason: Reason::SourceSize,
-            range: 0..source.len(),
-        });
-    }
-
-    Checker::new_validated(limits.clone()).check(source)
+    Checker::new(limits.clone()).check(source)
 }
 
-/// Reusable screening state backed by bounded, shared scratch buffers.
-/// [`Checker::new`] defers scratch allocation until the first scan.
-/// [`Checker::preallocated`] reserves it during construction instead.
-/// Default buffers grow on demand up to configured bounds and retain capacity.
-///
-/// Use one checker per worker when screening many inputs before parsing them.
-/// Source strings are borrowed only for the duration of each check.
+/// Collect all scores without score thresholds or a fixed storage ceiling.
+pub fn analyze(source: &str) -> Report {
+    Checker::default().analyze(source)
+}
+
+/// Reusable complexity measurement and checking. Source is never retained.
+/// Growing scratch retains capacity; fixed scratch performs no scan allocations.
+#[derive(Default)]
 pub struct Checker {
     limits: Limits,
     buffers: Option<CheckBuffers>,
@@ -52,73 +37,108 @@ pub struct Checker {
 
 struct CheckBuffers {
     scratch: ScanScratch,
-    work: Stack<ScanFrame, SCAN_FRAMES>,
+    work: Stack<ScanFrame>,
 }
 
 impl Checker {
-    /// Creates a checker whose buffers start empty and grow on demand within
-    /// configured bounds. Checks retain capacity for subsequent inputs.
-    pub fn new(limits: Limits) -> Result<Self, ConfigError> {
-        limits.validate()?;
-        Ok(Self::new_validated(limits))
-    }
-
-    fn new_validated(limits: Limits) -> Self {
+    /// Create a growing checker without allocating scratch.
+    pub fn new(limits: Limits) -> Self {
         Self {
             limits,
             buffers: None,
         }
     }
 
-    /// Reserves scratch storage immediately, including for the first check.
-    /// Input cannot grow these buffers; checks perform no heap allocations.
-    pub fn preallocated(limits: Limits) -> Result<Self, ConfigError> {
-        let mut checker = Self::new(limits)?;
-        checker.buffers = Some(CheckBuffers::new(&checker.limits, true));
-        Ok(checker)
+    /// Reserve a fixed number of entries per stack, independently of limits.
+    /// Reservation failure is reported before any input is scanned.
+    pub fn with_storage(limits: Limits, storage: Storage) -> Result<Self, StorageError> {
+        let buffers = CheckBuffers::new(storage);
+        if buffers.scratch.failed() || buffers.work.failed() {
+            return Err(StorageError);
+        }
+        Ok(Self {
+            limits,
+            buffers: Some(buffers),
+        })
     }
 
-    /// Statement-level proofs with local detailed fallback.
-    /// Returns the same rejection reasons and ranges as normal screening.
+    /// Collect scores until completion or the first configured threshold/resource
+    /// stop. Scores in an incomplete report describe only the observed prefix.
+    pub fn analyze(&mut self, source: &str) -> Report {
+        let mut scores = Scores {
+            source_bytes: source.len(),
+            ..Scores::default()
+        };
+        let stopped = self.run::<false, true>(source, &mut scores).err();
+        Report { scores, stopped }
+    }
+
+    /// Apply thresholds with early exits; no full score report is collected.
+    /// Success does not validate Python syntax.
+    pub fn check(&mut self, source: &str) -> Result<(), Rejection> {
+        self.run::<false, false>(source, &mut Scores::default())
+    }
+
+    /// Enable conservative statement proofs with detailed fallback.
     #[cfg(feature = "regions")]
     pub fn check_regions(&mut self, source: &str) -> Result<(), Rejection> {
-        self.check_mode::<true>(source)
+        self.run::<true, false>(source, &mut Scores::default())
     }
 
-    /// Rejects source that exceeds the configured structural budgets.
-    /// Successful screening does not validate Python syntax.
-    /// Each scan resets logical contents while retaining buffer capacities,
-    /// including when the preceding scan rejected its input.
-    pub fn check(&mut self, source: &str) -> Result<(), Rejection> {
-        self.check_mode::<false>(source)
-    }
-
-    fn check_mode<const REGION_PROOFS: bool>(&mut self, source: &str) -> Result<(), Rejection> {
-        if source.len() > self.limits.max_source_bytes {
+    fn run<const REGION_PROOFS: bool, const COLLECT: bool>(
+        &mut self,
+        source: &str,
+        scores: &mut Scores,
+    ) -> Result<(), Rejection> {
+        if self
+            .limits
+            .max_source_bytes
+            .is_some_and(|limit| source.len() > limit)
+        {
             return Err(Rejection {
                 reason: Reason::SourceSize,
                 range: 0..source.len(),
             });
         }
-
-        // Oversized source is rejected before initializing even the growing buffers.
+        // Structural charges are bounded by a constant per scanned byte. Check
+        // representability before arithmetic, including cumulative child rescans.
+        if source.len().checked_mul(16).is_none() {
+            return Err(Rejection {
+                reason: Reason::Overflow,
+                range: 0..source.len(),
+            });
+        }
         let buffers = self
             .buffers
-            .get_or_insert_with(|| CheckBuffers::new(&self.limits, false));
-        scan::<true, REGION_PROOFS>(
-            source,
-            &self.limits,
-            &mut buffers.scratch,
-            &mut buffers.work,
-        )
+            .get_or_insert_with(|| CheckBuffers::new(Storage::Growing));
+        if COLLECT {
+            scan_tokens::<false, false, true, true>(
+                source,
+                &self.limits,
+                &mut buffers.scratch,
+                &mut buffers.work,
+                scores,
+            )
+        } else {
+            scan::<true, REGION_PROOFS>(
+                source,
+                &self.limits,
+                &mut buffers.scratch,
+                &mut buffers.work,
+            )
+        }
     }
 }
 
 impl CheckBuffers {
-    fn new(limits: &Limits, preallocated: bool) -> Self {
+    fn new(storage: Storage) -> Self {
+        let (capacity, fixed) = match storage {
+            Storage::Growing => (0, false),
+            Storage::Fixed { capacity } => (capacity, true),
+        };
         Self {
-            scratch: ScanScratch::new(limits, preallocated),
-            work: Stack::with_storage(annotation_frames(limits), preallocated),
+            scratch: ScanScratch::new(storage),
+            work: Stack::with_storage(capacity, fixed),
         }
     }
 }
@@ -128,10 +148,12 @@ impl CheckBuffers {
 #[derive(Default)]
 struct ScanFrame {
     source: Range<usize>,
-    budget: u32,
-    ast_budget: Option<u32>,
+    budget: usize,
+    ast_budget: Option<usize>,
     annotation_source: bool,
-    depth: u8,
+    depth: usize,
+    parser_offset: usize,
+    ast_offset: usize,
     // None starts a new scan; Some resumes immediately after a quoted string.
     lexer: Option<LexerState>,
     // Only suspended parents hold saved state; their buffers stay in place.
@@ -152,7 +174,14 @@ impl ScanFrame {
         // source. Attribute structural failures to the enclosing annotation;
         // preserve Inconclusive because budget exhaustion proves no violation.
         Rejection {
-            reason: if self.outer_annotation.is_some() && reason != Reason::Inconclusive {
+            reason: if self.outer_annotation.is_some()
+                && !matches!(
+                    reason,
+                    Reason::Inconclusive
+                        | Reason::Storage
+                        | Reason::Overflow
+                        | Reason::LexicalStructure
+                ) {
                 Reason::QuotedAnnotation
             } else {
                 reason
@@ -172,40 +201,73 @@ fn scan<const SIMPLE_LINES: bool, const REGION_PROOFS: bool>(
     source: &str,
     limits: &Limits,
     scratch: &mut ScanScratch,
-    work: &mut Stack<ScanFrame, SCAN_FRAMES>,
+    work: &mut Stack<ScanFrame>,
 ) -> Result<(), Rejection> {
     // Select once per input so disabled width budgets add no per-token checks.
     if limits.widths_enabled() {
-        scan_tokens::<SIMPLE_LINES, REGION_PROOFS, true>(source, limits, scratch, work)
+        scan_tokens::<SIMPLE_LINES, REGION_PROOFS, true, false>(
+            source,
+            limits,
+            scratch,
+            work,
+            &mut Scores::default(),
+        )
     } else {
-        scan_tokens::<SIMPLE_LINES, REGION_PROOFS, false>(source, limits, scratch, work)
+        scan_tokens::<SIMPLE_LINES, REGION_PROOFS, false, false>(
+            source,
+            limits,
+            scratch,
+            work,
+            &mut Scores::default(),
+        )
     }
 }
 
-fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_WIDTHS: bool>(
+fn scan_tokens<
+    const SIMPLE_LINES: bool,
+    const REGION_PROOFS: bool,
+    const COUNT_WIDTHS: bool,
+    const COLLECT: bool,
+>(
     source: &str,
     limits: &Limits,
     scratch: &mut ScanScratch,
-    work: &mut Stack<ScanFrame, SCAN_FRAMES>,
+    work: &mut Stack<ScanFrame>,
+    scores: &mut Scores,
 ) -> Result<(), Rejection> {
     // Reset all segment bases after success or rejection, including child errors.
     scratch.clear_segments();
     work.clear();
-    work.push(ScanFrame {
+    if !work.push(ScanFrame {
         source: 0..source.len(),
-        budget: u32::from(limits.max_nesting_depth),
-        ast_budget: limits.max_ast_depth.map(u32::from),
+        budget: limits.max_nesting_depth.unwrap_or(usize::MAX),
+        ast_budget: if COLLECT {
+            Some(limits.max_ast_depth.unwrap_or(usize::MAX))
+        } else {
+            limits.max_ast_depth
+        },
         annotation_source: false,
         depth: 0,
+        parser_offset: 0,
+        ast_offset: 0,
         lexer: None,
         saved: None,
         region_start: true,
         outer_annotation: None,
-    });
+    }) {
+        return Err(Rejection {
+            reason: Reason::Storage,
+            range: 0..0,
+        });
+    }
     let mut tokens_used = 0usize;
     // Charge the outer source once, then charge annotation contents again when
     // reinterpreted. Nested strings must not multiply the configured work budget.
     let mut bytes_scanned = source.len();
+    if COLLECT {
+        scores.scanned_bytes = bytes_scanned;
+        scores.work_units = bytes_scanned;
+    }
     if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
         return Err(Rejection {
             reason: Reason::Inconclusive,
@@ -231,30 +293,34 @@ fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_
         let mut lexer = if let Some(state) = current.lexer {
             Lexer::resume(
                 frame_source,
-                current.budget as usize,
-                usize::from(limits.max_indentation_depth),
+                limits.max_delimiter_depth.unwrap_or(usize::MAX),
+                limits.max_indentation_depth.unwrap_or(usize::MAX),
                 lexer_scratch,
                 state,
             )
         } else {
-            scanner.reset(current.budget, current.ast_budget);
+            if !scanner.reset(current.budget, current.ast_budget) {
+                return Err(current.rejection(Reason::Storage, &(0..0)));
+            }
             annotations.reset();
             widths.reset();
 
             let mut lexer = Lexer::new(
                 frame_source,
-                current.budget as usize,
-                usize::from(limits.max_indentation_depth),
+                limits.max_delimiter_depth.unwrap_or(usize::MAX),
+                limits.max_indentation_depth.unwrap_or(usize::MAX),
                 lexer_scratch,
             );
             if SIMPLE_LINES {
                 let simple_budget = current
                     .budget
-                    .min(current.ast_budget.unwrap_or(current.budget))
-                    as usize;
+                    .min(current.ast_budget.unwrap_or(current.budget));
                 while let Some(count) = lexer.skip_simple_line(
                     simple_budget,
-                    limits.max_tokens.saturating_sub(tokens_used),
+                    limits
+                        .max_tokens
+                        .unwrap_or(usize::MAX)
+                        .saturating_sub(tokens_used),
                     limits.max_token_bytes,
                 ) {
                     tokens_used += count;
@@ -280,7 +346,10 @@ fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_
                 && let Some(remaining) = scanner.region_budget()
                 && let Some((count, seen_code)) = lexer.skip_region(
                     remaining,
-                    limits.max_tokens.saturating_sub(tokens_used),
+                    limits
+                        .max_tokens
+                        .unwrap_or(usize::MAX)
+                        .saturating_sub(tokens_used),
                     limits.max_token_bytes,
                     limits.check_string_annotations,
                     current.annotation_source,
@@ -305,7 +374,23 @@ fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_
                 matches!(token.kind, Kind::Newline | Kind::Indent | Kind::Dedent);
             tokens_used += 1;
 
-            if tokens_used > limits.max_tokens {
+            if COLLECT {
+                scores.tokens = tokens_used;
+                scores.work_units = bytes_scanned.saturating_add(tokens_used);
+                scores.max_token_bytes = scores.max_token_bytes.max(token.range.len());
+                let (delimiters, indents) = lexer.depths();
+                scores.delimiter_depth = scores.delimiter_depth.max(delimiters);
+                scores.indentation_depth = scores.indentation_depth.max(indents);
+                // Lexer thresholds reject before pushing an overflowing level.
+                // Include that observed attempt, while storage failures prove no depth.
+                if token.kind == Kind::NestingLimit && !lexer.storage_failed() {
+                    scores.delimiter_depth = scores.delimiter_depth.max(delimiters + 1);
+                }
+                if token.kind == Kind::IndentationLimit {
+                    scores.indentation_depth = scores.indentation_depth.max(indents + 1);
+                }
+            }
+            if limits.max_tokens.is_some_and(|limit| tokens_used > limit) {
                 return Err(current.rejection(Reason::TokenCount, &token.range));
             }
             if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
@@ -319,19 +404,24 @@ fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_
             }
             let lexical_reason = match token.kind {
                 Kind::Limit => Some(Reason::LexicalStructure),
-                Kind::NestingLimit => Some(Reason::Nesting),
+                Kind::StorageLimit => Some(Reason::Storage),
+                Kind::NestingLimit => Some(if lexer.storage_failed() {
+                    Reason::Storage
+                } else {
+                    Reason::DelimiterDepth
+                }),
                 Kind::IndentationLimit => Some(Reason::Indentation),
                 _ => None,
             };
             if let Some(reason) = lexical_reason {
                 return Err(current.rejection(reason, &token.range));
             }
-            // Even without width limits, retain bounded frame tracking: unfinished
-            // lambda parameters can fill scratch before parser depth is charged.
+            // Collection always needs widths. Checking compiles tracking out
+            // completely when no width threshold can affect its result.
             let width_reason = if COUNT_WIDTHS {
-                widths.observe(frame_source, token.kind, &token.range, limits)
+                widths.observe::<COLLECT>(frame_source, token.kind, &token.range, limits, scores)
             } else {
-                widths.observe_capacity(frame_source, token.kind, &token.range)
+                None
             };
             if let Some(reason) = width_reason {
                 return Err(current.rejection(reason, &token.range));
@@ -349,18 +439,39 @@ fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_
                         .map(|budget| budget.saturating_sub(scanner.ast_total));
                     let minimum = remaining.min(ast_remaining.unwrap_or(remaining));
                     // Without decoding or expansion, byte length bounds the
-                    // possible structural depth. Short contents need no rescan.
-                    if contents.len() > minimum as usize {
-                        if current.depth >= limits.max_annotation_depth {
+                    // possible structural depth. Skip short contents only when
+                    // no other requested threshold needs their tokens or levels.
+                    if COLLECT
+                        || contents.len() > minimum
+                        || limits.max_annotation_depth.is_some()
+                        || limits.max_tokens.is_some()
+                        || limits.max_work_units.is_some()
+                        || limits.max_token_bytes.is_some()
+                        || limits.widths_enabled()
+                        || limits.max_delimiter_depth.is_some()
+                        || limits.max_indentation_depth.is_some()
+                    {
+                        if COLLECT {
+                            scores.annotation_depth =
+                                scores.annotation_depth.max(current.depth + 1);
+                        }
+                        if limits
+                            .max_annotation_depth
+                            .is_some_and(|limit| current.depth >= limit)
+                        {
                             return Err(current.rejection(Reason::QuotedAnnotation, &token.range));
                         }
                         let Some(next_bytes) = bytes_scanned.checked_add(contents.len()) else {
-                            return Err(current.rejection(Reason::QuotedAnnotation, &token.range));
+                            return Err(current.rejection(Reason::Overflow, &token.range));
                         };
-                        if next_bytes > limits.max_source_bytes {
-                            return Err(current.rejection(Reason::QuotedAnnotation, &token.range));
+                        if next_bytes.checked_mul(16).is_none() {
+                            return Err(current.rejection(Reason::Overflow, &token.range));
                         }
                         bytes_scanned = next_bytes;
+                        if COLLECT {
+                            scores.scanned_bytes = bytes_scanned;
+                            scores.work_units = bytes_scanned.saturating_add(tokens_used);
+                        }
                         if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
                             return Err(current.rejection(Reason::Inconclusive, &token.range));
                         }
@@ -370,6 +481,8 @@ fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_
                             ast_budget: ast_remaining,
                             annotation_source: true,
                             depth: current.depth + 1,
+                            parser_offset: current.parser_offset + scanner.total,
+                            ast_offset: current.ast_offset + scanner.ast_total,
                             lexer: None,
                             saved: None,
                             region_start: true,
@@ -383,10 +496,19 @@ fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_
                     }
                 }
             }
-            if let Some(reason) = scanner.observe(token.kind) {
+            let structural_reason = scanner.observe::<COLLECT>(token.kind);
+            if COLLECT {
+                scores.parser_depth = scores
+                    .parser_depth
+                    .max(current.parser_offset + scanner.peak_parser);
+                scores.ast_depth = scores.ast_depth.max(current.ast_offset + scanner.peak_ast);
+            }
+            if let Some(reason) = structural_reason {
                 return Err(current.rejection(reason, &token.range));
             }
-            annotations.observe(frame_source, token.kind, &token.range);
+            if let Some(reason) = annotations.observe(frame_source, token.kind, &token.range) {
+                return Err(current.rejection(reason, &token.range));
+            }
             if let Some(child) = child {
                 // Observe the string in its parent before suspending: the child
                 // borrows the remaining depth but has independent lexical state.
@@ -397,7 +519,15 @@ fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_
 
         if let Some(child) = next_child {
             work[index].saved = Some(scratch.suspend());
-            work.push(child);
+            if !work.push(child) {
+                return Err(Rejection {
+                    reason: Reason::Storage,
+                    range: work[index]
+                        .outer_annotation
+                        .clone()
+                        .unwrap_or_else(|| work[index].source.clone()),
+                });
+            }
         } else {
             work.pop();
             if let Some(parent) = work.last_mut() {
@@ -407,6 +537,6 @@ fn scan_tokens<const SIMPLE_LINES: bool, const REGION_PROOFS: bool, const COUNT_
     }
 }
 
-fn work_exceeded(bytes_scanned: usize, tokens_used: usize, limit: usize) -> bool {
-    bytes_scanned.saturating_add(tokens_used) > limit
+fn work_exceeded(bytes_scanned: usize, tokens_used: usize, limit: Option<usize>) -> bool {
+    limit.is_some_and(|limit| bytes_scanned.saturating_add(tokens_used) > limit)
 }

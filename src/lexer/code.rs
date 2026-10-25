@@ -8,6 +8,10 @@ impl Iterator for Lexer<'_, '_> {
     #[inline(always)]
     fn next(&mut self) -> Option<Token> {
         if self.stopped {
+            if self.storage_failed {
+                self.storage_failed = false;
+                return Some(self.token(Kind::StorageLimit, self.position));
+            }
             return None;
         }
         let bytes = self.source.as_bytes();

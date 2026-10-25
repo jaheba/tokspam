@@ -33,14 +33,14 @@ fn simple_prefix_matches_detailed_scanning() {
         for tokens in [0, 1, 4, 20, 1000] {
             for token_bytes in [None, Some(0), Some(1), Some(8)] {
                 let limits = Limits {
-                    max_nesting_depth: depth,
+                    max_nesting_depth: Some(depth),
                     max_ast_depth: Some(depth / 2),
-                    max_tokens: tokens,
+                    max_tokens: Some(tokens),
                     max_token_bytes: token_bytes,
-                    max_annotation_depth: 3,
-                    ..Limits::default()
+                    max_annotation_depth: Some(3),
+                    ..Limits::screening()
                 };
-                let mut checker = Checker::new(limits.clone()).expect("valid limits");
+                let mut checker = Checker::new(limits.clone());
 
                 for _ in 0..100 {
                     let mut source = String::new();

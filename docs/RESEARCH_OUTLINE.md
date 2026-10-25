@@ -28,9 +28,10 @@ exhaustion case where that pipeline interprets them.
 1. **A structural screening design.** A streaming lexer retains source ranges without collecting tokens. Separate
    estimates track parser nesting and AST height, including operator precedence and postfix chains. Likely quoted
    annotations use an explicit work stack and share cumulative scan budgets.
-2. **An auditable resource contract.** Configuration has hard ceilings; scratch capacities depend on configuration;
-   scanning performs no heap allocations; source structure does not increase native call-stack depth. Exhausting
-   work fuel or an internal tracking capacity can produce `Inconclusive`, separately from a structural violation.
+2. **An auditable resource contract.** Score thresholds are optional. Growing scratch is fallible; fixed scratch has
+   caller-selected capacity and performs no scanning allocations. Source structure does not increase native
+   call-stack depth. Exhausting work fuel produces `Inconclusive`; exhausting scratch produces `Storage`,
+   separately from a structural violation.
 3. **A reproducible empirical characterization.** Measure failure interception, ordinary-source rejection, and
    overhead across pinned downstream implementations and configurations. Publish retained counterexamples and
    identify the conditions under which simpler checks perform equally well.

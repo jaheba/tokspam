@@ -230,16 +230,13 @@ impl Lexer<'_, '_> {
         &mut self,
         start: usize,
         quote_start: usize,
-        remaining: usize,
+        _remaining: usize,
         annotation: bool,
     ) -> Option<usize> {
         let token = self.quoted(start, quote_start);
-        if token.kind != Kind::String
-            || annotation
-                && token
-                    .contents
-                    .is_some_and(|contents| contents.len() > remaining)
-        {
+        // A proof cannot account for child token/work or annotation-depth
+        // scores. Leave type strings to the detailed scan even when short.
+        if token.kind != Kind::String || annotation && token.contents.is_some() {
             return None;
         }
         Some(token.range.end)

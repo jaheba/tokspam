@@ -2,9 +2,9 @@ import { createEditor } from "./editor.js";
 
 const reasonNames = [
   "Pass", "Source size", "Token count", "Token size", "Nesting", "Indentation",
-  "AST depth", "Lexical structure", "Quoted annotation", "Configuration",
+  "AST depth", "Lexical structure", "Quoted annotation", "Storage",
   "Call arguments", "Parameters", "Display items", "Slice items",
-  "Interpolation fields", "Inconclusive", "Reserved", "Invalid UTF-8",
+  "Interpolation fields", "Inconclusive", "Accounting overflow", "Invalid UTF-8", "Lexical depth",
 ];
 
 const validationDetails = {
@@ -16,7 +16,9 @@ const validationDetails = {
   6: ["AST depth estimate", "The estimated AST depth exceeded its budget. Long operator or attribute chains can contribute."],
   7: ["Lexical structure", "The scanner found malformed or unsupported lexical structure near this range."],
   8: ["Quoted annotation screening", "A quoted annotation needed more nested screening than allowed, or its contents failed a structural check. The range points to the outer string."],
-  9: ["Limit configuration", "The configured limits were invalid before source screening began."],
+  9: ["Scratch storage", "The scan could not reserve enough scratch memory to continue."],
+  16: ["Accounting overflow", "The scan could not continue with representable counters."],
+  18: ["Lexical depth", "The active lexer context depth exceeded its configured threshold."],
   10: ["Call argument count", "A call contained more arguments than its configured budget."],
   11: ["Parameter count", "A definition contained more parameters than its configured budget."],
   12: ["Display item count", "A display contained more items than its configured budget."],
@@ -182,12 +184,12 @@ function showSourceLocation(bytes, start, end) {
   rejectionSelection = { startIndex, endIndex };
 }
 
-function showRejection(code, start, end, bytes, meta, settings, hardCeiling = false) {
+function showRejection(code, start, end, bytes, meta, settings) {
   const [rule, explanation] = validationDetails[code] ?? [reasonNames[code] ?? `Reason ${code}`, "Tokspam rejected this source near the reported range."];
-  const limit = hardCeiling ? wasm.demo_source_ceiling() : configuredLimit(code, settings);
-  const limitText = hardCeiling ? `${limit.toLocaleString()} UTF-8 bytes (hard ceiling)` : formatLimit(code, limit);
+  const limit = configuredLimit(code, settings);
+  const limitText = formatLimit(code, limit);
 
-  const title = code === 15 ? "Screening inconclusive" : `${reasonNames[code] ?? "Source"} rejected`;
+  const title = [9, 15, 16].includes(code) ? "Screening incomplete" : `${reasonNames[code] ?? "Source"} rejected`;
   showResult("reject", title, explanation, meta);
   resultRule.textContent = rule;
   resultLimit.textContent = limitText;
@@ -222,11 +224,6 @@ function screen() {
   if (!settings) return;
 
   const bytes = encoder.encode(source.value);
-  if (bytes.length > wasm.demo_source_ceiling()) {
-    showRejection(1, 0, bytes.length, bytes, `${bytes.length.toLocaleString()} UTF-8 bytes`, settings, true);
-    return;
-  }
-
   const ptr = wasm.demo_alloc(bytes.length);
   if (!ptr) {
     showResult("error", "Could not run screening", "WebAssembly memory allocation failed.");
@@ -236,11 +233,11 @@ function screen() {
   try {
     new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
     const started = performance.now();
-    const packed = wasm.demo_check_configured(ptr, bytes.length, ...settings);
+    const code = wasm.demo_check_configured(ptr, bytes.length, ...settings);
+    const packed = wasm.demo_result_range();
     const elapsed = performance.now() - started;
-    const mask = (1n << 25n) - 1n;
-    const code = Number(packed >> 50n);
-    const start = Number((packed >> 25n) & mask);
+    const mask = (1n << 32n) - 1n;
+    const start = Number(packed >> 32n);
     const end = Number(packed & mask);
     const lines = source.value.split("\n").length - Number(source.value.endsWith("\n"));
     const timing = elapsed === 0 ? "below browser timer resolution" : `${elapsed.toFixed(3)} ms`;

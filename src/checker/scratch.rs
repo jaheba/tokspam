@@ -2,7 +2,7 @@
 
 use super::annotations::{AnnotationState, AnnotationTracker};
 use super::widths::{WidthState, WidthTracker};
-use crate::Limits;
+use crate::Storage;
 use crate::lexer::LexerScratch;
 use crate::rules::{Scanner, ScannerState};
 use crate::stack::{Mark, Stack};
@@ -49,41 +49,26 @@ impl ScanScratch {
         self.widths.frames.reset();
     }
 
-    pub(super) fn new(limits: &Limits, preallocated: bool) -> Self {
-        let frames = annotation_frames(limits);
-        // Children share the remaining depth. Each suspended scan additionally
-        // needs a root entry; one transient entry lets the lexer report overflow.
-        let capacity = usize::from(limits.max_nesting_depth) + frames + 1;
+    pub(super) fn failed(&self) -> bool {
+        self.lexer.failed()
+            || self.scanner.failed()
+            || self.annotations.brackets.failed()
+            || self.widths.frames.failed()
+    }
 
+    pub(super) fn new(storage: Storage) -> Self {
+        let (capacity, fixed) = match storage {
+            Storage::Growing => (0, false),
+            Storage::Fixed { capacity } => (capacity, true),
+        };
         Self {
-            lexer: LexerScratch::with_storage(
-                capacity,
-                usize::from(limits.max_nesting_depth.min(limits.max_indentation_depth))
-                    + frames
-                    + 1,
-                preallocated,
-            ),
-            scanner: Scanner::with_storage(
-                u32::from(limits.max_nesting_depth),
-                limits.max_ast_depth.map(u32::from),
-                capacity,
-                preallocated,
-            ),
+            lexer: LexerScratch::with_storage(capacity, capacity, fixed),
+            scanner: Scanner::with_storage(capacity, fixed),
             annotations: AnnotationTracker {
-                brackets: Stack::with_storage(capacity, preallocated),
+                brackets: Stack::with_storage(capacity, fixed),
                 state: AnnotationState::default(),
             },
-            // Pending lambda parameter lists do not charge parser depth until
-            // their colons arrive. Preserve the full bounded width capacity.
-            widths: WidthTracker::with_storage(preallocated),
+            widths: WidthTracker::with_storage(capacity, fixed),
         }
-    }
-}
-
-pub(super) fn annotation_frames(limits: &Limits) -> usize {
-    if limits.check_string_annotations {
-        usize::from(limits.max_annotation_depth) + 1
-    } else {
-        1
     }
 }

@@ -7,11 +7,11 @@ use crate::lexer::Kind;
 /// Malformed-input coverage is not a verified downstream safety guarantee.
 /// `AST` specializes the two passes so parser-only scanning omits AST branches.
 pub(super) struct Scanner<const AST: bool> {
-    limit: u32,
+    limit: usize,
     /// Open bracket levels, bottom entry being the module or expression itself.
     levels: Vec<Level>,
     /// Open indented blocks.
-    indent: u32,
+    indent: usize,
     /// Whether the previous token can end an operand, making a following
     /// `-`, `+`, `*` or `not` binary rather than prefix.
     prev_ends_operand: bool,
@@ -19,9 +19,9 @@ pub(super) struct Scanner<const AST: bool> {
     statement_start: bool,
     /// Consecutive `elif` clauses at each indentation level. Python stores
     /// these as nested `If` nodes despite their flat source indentation.
-    elif_runs: Vec<u32>,
+    elif_runs: Vec<usize>,
     /// Open levels (excluding the bottom), indentation and every level's counts.
-    pub(super) total: u32,
+    pub(super) total: usize,
 }
 
 /// Frames open at one bracket level.
@@ -29,17 +29,17 @@ struct Level {
     kind: LevelKind,
     /// Prefix operators and `**` right operands: any lower-precedence binary
     /// operator proves they have returned.
-    tight: u32,
+    tight: usize,
     /// Lambda bodies, `else` branches and format specs: only the level's end
     /// or a comma, newline or statement colon proves they have returned.
-    loose: u32,
+    loose: usize,
     /// `lambda` keywords whose `:` has not arrived, so commas are still
     /// separating parameters rather than ending a body.
-    pending_lambdas: u32,
+    pending_lambdas: usize,
     // Strictly increasing precedences in 1..=6 need at most six entries.
-    binary_stack: [(u8, u32); 6],
+    binary_stack: [(u8, usize); 6],
     binary_len: usize,
-    binary_depth: u32,
+    binary_depth: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -56,23 +56,23 @@ enum LevelKind {
 }
 
 impl<const AST: bool> Scanner<AST> {
-    pub(super) fn new(limit: u32) -> Self {
+    pub(super) fn new(limit: usize) -> Self {
         // Include the root and one overflowing entry: observe reports the
         // rejection after pushing the token that exceeds the budget.
         let mut scanner = Self {
             limit,
-            levels: Vec::with_capacity(limit as usize + 2),
+            levels: Vec::with_capacity(limit + 2),
             indent: 0,
             prev_ends_operand: false,
             statement_start: true,
-            elif_runs: Vec::with_capacity(limit as usize + 2),
+            elif_runs: Vec::with_capacity(limit + 2),
             total: 0,
         };
         scanner.reset(limit);
         scanner
     }
 
-    pub(super) fn reset(&mut self, limit: u32) {
+    pub(super) fn reset(&mut self, limit: usize) {
         self.limit = limit;
         self.levels.clear();
         self.levels.push(Level::new(LevelKind::Top));
@@ -273,12 +273,12 @@ impl<const AST: bool> Scanner<AST> {
         }
     }
 
-    fn add_tight(&mut self, frames: u32) -> bool {
+    fn add_tight(&mut self, frames: usize) -> bool {
         self.top().tight += frames;
         self.add(frames)
     }
 
-    fn add_loose(&mut self, frames: u32) -> bool {
+    fn add_loose(&mut self, frames: usize) -> bool {
         self.top().loose += frames;
         self.add(frames)
     }
@@ -316,7 +316,7 @@ impl<const AST: bool> Scanner<AST> {
         let depth = level.binary_stack[..level.binary_len]
             .iter()
             .rev()
-            .fold(0u32, |right, (_, left)| left.max(&right) + 1);
+            .fold(0usize, |right, (_, left)| left.max(&right) + 1);
         let old_depth = level.binary_depth;
         level.binary_depth = depth;
         if depth >= old_depth {
@@ -327,7 +327,7 @@ impl<const AST: bool> Scanner<AST> {
         }
     }
 
-    fn add(&mut self, frames: u32) -> bool {
+    fn add(&mut self, frames: usize) -> bool {
         self.total += frames;
         self.total > self.limit
     }

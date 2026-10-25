@@ -7,10 +7,10 @@ fn check(source: &str) -> Result<(), Rejection> {
     super::check(
         source,
         &Limits {
-            max_source_bytes: 1_000_000,
-            max_nesting_depth: 30,
+            max_source_bytes: Some(1_000_000),
+            max_nesting_depth: Some(30),
             max_ast_depth: None,
-            ..Limits::default()
+            ..Limits::screening()
         },
     )
 }

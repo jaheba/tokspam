@@ -1,7 +1,7 @@
 //! Recursion rules adapted from Monty's existing source-nesting guard.
 use super::Reason;
 use super::lexer::Kind;
-use crate::stack::{Mark, STRUCTURAL_CAPACITY, Stack};
+use crate::stack::{Mark, Stack};
 
 /// Estimates parser frames from lexical structure.
 /// Brackets, operators, bodies, format specs and blocks consume depth.
@@ -9,22 +9,23 @@ use crate::stack::{Mark, STRUCTURAL_CAPACITY, Stack};
 /// Parser and AST estimates share structural state and keep separate totals.
 pub(super) struct Scanner {
     /// Open bracket levels, bottom entry being the module or expression itself.
-    levels: Stack<Level, STRUCTURAL_CAPACITY>,
+    levels: Stack<Level>,
     /// True for indentation levels whose suite contains `case` clauses.
-    match_blocks: Stack<bool, STRUCTURAL_CAPACITY>,
+    match_blocks: Stack<bool>,
     /// Consecutive `elif` clauses at each indentation level. Python stores
     /// these as nested `If` nodes despite their flat source indentation.
-    elif_runs: Stack<u32, STRUCTURAL_CAPACITY>,
+    elif_runs: Stack<usize>,
     state: ScannerState,
+    storage_failed: bool,
 }
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct ScannerState {
-    limit: u32,
-    ast_limit: Option<u32>,
-    pub(super) ast_total: u32,
+    limit: usize,
+    ast_limit: Option<usize>,
+    pub(super) ast_total: usize,
     /// Open indented blocks.
-    indent: u32,
+    indent: usize,
     /// Whether the previous token can end an operand, making a following
     /// `-`, `+`, `*` or `not` binary rather than prefix.
     prev_ends_operand: bool,
@@ -36,10 +37,10 @@ pub(super) struct ScannerState {
     /// Whether the next indent opens a `match` body.
     pending_match: bool,
     /// Open levels (excluding the bottom), indentation and every level's counts.
-    pub(super) total: u32,
+    pub(super) total: usize,
+    pub(super) peak_parser: usize,
+    pub(super) peak_ast: usize,
 }
-
-const _: () = assert!(crate::MAX_AST_DEPTH as u32 + 6 <= u16::MAX as u32);
 
 /// Frames open at one bracket level.
 struct Level {
@@ -47,24 +48,24 @@ struct Level {
     postfix: bool,
     /// Prefix operators and `**` right operands: any lower-precedence binary
     /// operator proves they have returned.
-    tight: u32,
+    tight: usize,
     /// Lambda bodies, `else` branches and format specs: only the level's end
     /// or a comma, newline or statement colon proves they have returned.
-    loose: u32,
+    loose: usize,
     /// `lambda` keywords whose `:` has not arrived, so commas are still
     /// separating parameters rather than ending a body.
-    pending_lambdas: u32,
+    pending_lambdas: usize,
     // Strictly increasing precedences in 1..=6 need at most six entries.
-    // Separate arrays avoid tuple padding at every structural level. Depths
-    // are AST-only: the hard AST ceiling plus six folds fits in u16.
+    // Separate arrays avoid padding at every structural level. Depths use
+    // usize so analysis is not restricted to a small implementation ceiling.
     binary_precedences: [u8; 6],
-    binary_left_depths: [u16; 6],
+    binary_left_depths: [usize; 6],
     binary_len: u8,
-    expression_depth: u32,
+    expression_depth: usize,
     // Postfix/grouped height of the current operand, independent of siblings.
-    operand_depth: u32,
+    operand_depth: usize,
     // Retain the deepest item when commas or closing brackets end a child scan.
-    ast_peak: u32,
+    ast_peak: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -82,24 +83,20 @@ enum LevelKind {
 
 impl Scanner {
     #[cfg(test)]
-    pub(super) fn new(limit: u32, ast_limit: Option<u32>) -> Self {
-        Self::with_storage(limit, ast_limit, limit as usize + 2, true)
+    pub(super) fn new(limit: usize, ast_limit: Option<usize>) -> Self {
+        let mut scanner = Self::with_storage(limit + 2, true);
+        scanner.reset(limit, ast_limit);
+        scanner
     }
 
-    pub(super) fn with_storage(
-        limit: u32,
-        ast_limit: Option<u32>,
-        capacity: usize,
-        preallocated: bool,
-    ) -> Self {
-        let mut scanner = Self {
+    pub(super) fn with_storage(capacity: usize, preallocated: bool) -> Self {
+        Self {
             levels: Stack::with_storage(capacity, preallocated),
             match_blocks: Stack::with_storage(capacity, preallocated),
             elif_runs: Stack::with_storage(capacity, preallocated),
             state: ScannerState::default(),
-        };
-        scanner.reset(limit, ast_limit);
-        scanner
+            storage_failed: false,
+        }
     }
 
     pub(super) fn suspend(&mut self) -> (ScannerState, [Mark; 3]) {
@@ -120,28 +117,42 @@ impl Scanner {
         self.elif_runs.restore(saved.1[2]);
     }
 
+    pub(super) fn failed(&self) -> bool {
+        self.levels.failed() || self.elif_runs.failed() || self.match_blocks.failed()
+    }
+
     pub(super) fn clear_segments(&mut self) {
         self.levels.reset();
         self.match_blocks.reset();
         self.elif_runs.reset();
     }
 
-    pub(super) fn reset(&mut self, limit: u32, ast_limit: Option<u32>) {
+    pub(super) fn reset(&mut self, limit: usize, ast_limit: Option<usize>) -> bool {
+        self.storage_failed = false;
+        self.state.peak_parser = 0;
+        self.state.peak_ast = 0;
         self.state.limit = limit;
         self.state.ast_limit = ast_limit;
         self.state.ast_total = 0;
         self.levels.clear();
-        self.levels.push(Level::new(LevelKind::Top));
+        if !self.levels.push(Level::new(LevelKind::Top)) {
+            return false;
+        }
         self.elif_runs.clear();
-        self.elif_runs.push(0);
+        if !self.elif_runs.push(0) {
+            return false;
+        }
         self.state.indent = 0;
         self.state.prev_ends_operand = false;
         self.state.statement_start = true;
         self.state.in_pattern = false;
         self.state.pending_match = false;
         self.match_blocks.clear();
-        self.match_blocks.push(false);
+        if !self.match_blocks.push(false) {
+            return false;
+        }
         self.state.total = 0;
+        true
     }
 
     #[cfg(feature = "regions")]
@@ -160,7 +171,7 @@ impl Scanner {
         Some(
             remaining.min(self.state.ast_limit.map_or(remaining, |limit| {
                 limit.saturating_sub(self.state.ast_total)
-            })) as usize,
+            })),
         )
     }
 
@@ -178,7 +189,7 @@ impl Scanner {
 
     /// Updates both estimates, preserving parser rejection priority on a token.
     #[inline]
-    pub(super) fn observe(&mut self, kind: Kind) -> Option<Reason> {
+    pub(super) fn observe<const COLLECT: bool>(&mut self, kind: Kind) -> Option<Reason> {
         let starts_statement = self.state.statement_start;
         if self.state.ast_limit.is_some() {
             self.observe_statement_start(kind);
@@ -198,6 +209,9 @@ impl Scanner {
         // AST operators are checked before the token releases prefix frames.
         // A later reset must not hide a transient violation from the old pass.
         let ast_exceeded = self.ast_exceeded();
+        if COLLECT {
+            self.state.peak_ast = self.state.peak_ast.max(self.state.ast_total);
+        }
         let exceeded = match kind {
             Kind::Lpar | Kind::Lsqb => self.push(LevelKind::Bracket, self.state.prev_ends_operand),
             Kind::Lbrace => {
@@ -218,8 +232,9 @@ impl Scanner {
             }
             Kind::Indent => {
                 self.state.indent += 1;
-                self.elif_runs.push(0);
-                self.match_blocks.push(self.state.pending_match);
+                if !self.elif_runs.push(0) || !self.match_blocks.push(self.state.pending_match) {
+                    return Some(Reason::Storage);
+                }
                 self.state.pending_match = false;
                 self.add(1)
             }
@@ -328,8 +343,16 @@ impl Scanner {
                 .ast_peak
                 .max(top.tight + top.loose + top.expression_depth);
         }
+        if COLLECT {
+            self.state.peak_parser = self.state.peak_parser.max(self.state.total);
+            self.state.peak_ast = self.state.peak_ast.max(self.state.ast_total);
+        }
         if exceeded {
-            Some(Reason::Nesting)
+            Some(if self.storage_failed {
+                Reason::Storage
+            } else {
+                Reason::Nesting
+            })
         } else if ast_exceeded || self.ast_exceeded() {
             Some(Reason::AstDepth)
         } else {
@@ -391,12 +414,15 @@ impl Scanner {
             let saved = parent.expression_depth;
             // Keep the conservative call/subscript wrapper charge while
             // descending into arguments; only completed callee height is suspended.
-            let active = u32::from(parent.binary_len) + u32::from(postfix);
+            let active = usize::from(parent.binary_len) + usize::from(postfix);
             self.state.ast_total = self.state.ast_total - saved + active;
         }
         let mut child = Level::new(kind);
         child.postfix = postfix;
-        self.levels.push(child);
+        if !self.levels.push(child) {
+            self.storage_failed = true;
+            return true;
+        }
         self.add(1)
     }
 
@@ -411,7 +437,7 @@ impl Scanner {
                 // their peak before a following postfix or binary operator wraps it.
                 let parent = self.top();
                 let saved = parent.expression_depth;
-                let active = u32::from(parent.binary_len) + u32::from(level.postfix);
+                let active = usize::from(parent.binary_len) + usize::from(level.postfix);
                 parent.operand_depth = parent.operand_depth.max(1 + level.ast_peak);
                 self.state.ast_total = self.state.ast_total - active + saved;
                 self.refresh_expression_depth();
@@ -419,12 +445,12 @@ impl Scanner {
         }
     }
 
-    fn add_tight(&mut self, frames: u32) -> bool {
+    fn add_tight(&mut self, frames: usize) -> bool {
         self.top().tight += frames;
         self.add(frames)
     }
 
-    fn add_loose(&mut self, frames: u32) -> bool {
+    fn add_loose(&mut self, frames: usize) -> bool {
         self.top().loose += frames;
         self.add(frames)
     }
@@ -461,13 +487,12 @@ impl Scanner {
             .is_some_and(|p| *p >= precedence)
         {
             level.binary_len -= 1;
-            let left = u32::from(level.binary_left_depths[usize::from(level.binary_len)]);
+            let left = level.binary_left_depths[usize::from(level.binary_len)];
             current = left.max(current) + 1;
         }
         let index = usize::from(level.binary_len);
         level.binary_precedences[index] = precedence;
-        level.binary_left_depths[index] = u16::try_from(current)
-            .expect("binary depth is bounded by the hard AST ceiling plus six folds");
+        level.binary_left_depths[index] = current;
         level.binary_len += 1;
         self.refresh_expression_depth();
     }
@@ -479,9 +504,7 @@ impl Scanner {
         let depth = level.binary_left_depths[..usize::from(level.binary_len)]
             .iter()
             .rev()
-            .fold(level.operand_depth, |right, left| {
-                u32::from(*left).max(right) + 1
-            });
+            .fold(level.operand_depth, |right, left| (*left).max(right) + 1);
         let old_depth = level.expression_depth;
         level.expression_depth = depth;
         self.state.ast_total = self.state.ast_total - old_depth + depth;
@@ -493,7 +516,7 @@ impl Scanner {
             .is_some_and(|limit| self.state.ast_total > limit)
     }
 
-    fn add(&mut self, frames: u32) -> bool {
+    fn add(&mut self, frames: usize) -> bool {
         self.state.total += frames;
         self.state.ast_total += frames;
         self.state.total > self.state.limit
@@ -556,10 +579,10 @@ mod tests {
     fn pending_lambda_counts_keep_the_full_token_budget_range() {
         let mut scanner = Scanner::new(1, None);
         for _ in 0..=u16::MAX {
-            assert_eq!(scanner.observe(Kind::Lambda), None);
+            assert_eq!(scanner.observe::<false>(Kind::Lambda), None);
         }
         assert_eq!(scanner.state.total, 0);
-        assert_eq!(scanner.top().pending_lambdas, u32::from(u16::MAX) + 1);
+        assert_eq!(scanner.top().pending_lambdas, usize::from(u16::MAX) + 1);
     }
 
     #[test]
@@ -575,7 +598,7 @@ mod tests {
                 let mut scratch = LexerScratch::default();
                 for token in Lexer::new(source, 100, 100, &mut scratch) {
                     let exceeded = reference.observe(token.kind);
-                    let actual = scanner.observe(token.kind);
+                    let actual = scanner.observe::<false>(token.kind);
                     assert_eq!(actual == Some(Reason::AstDepth), exceeded);
                     assert_eq!(scanner.ast_total, reference.total);
                     if exceeded {
@@ -612,7 +635,7 @@ mod tests {
 
                     for token in Lexer::new(&source, 30, 30, &mut scratch) {
                         let parser_exceeded = parser.observe(token.kind);
-                        let actual = combined.observe(token.kind);
+                        let actual = combined.observe::<false>(token.kind);
                         if parser_exceeded {
                             assert_eq!(actual, Some(Reason::Nesting), "{source:?}");
                         } else if ast_limit.is_none() {
