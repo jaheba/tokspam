@@ -94,6 +94,19 @@ fn fixed_storage_exhaustion_is_incomplete_and_reusable() {
 }
 
 #[test]
+fn fixed_storage_exhaustion_precedes_a_simultaneous_score_stop() {
+    let limits = Limits {
+        max_tokens: Some(0),
+        ..Limits::default()
+    };
+    let mut checker = Checker::with_storage(limits, Storage::Fixed { capacity: 1 }).unwrap();
+
+    let report = checker.analyze("(");
+    assert_eq!(report.scores.tokens, 1);
+    assert_eq!(report.stopped.unwrap().reason, Reason::Storage);
+}
+
+#[test]
 fn stops_explain_partial_scores() {
     let mut checker = Checker::new(Limits {
         max_tokens: Some(3),

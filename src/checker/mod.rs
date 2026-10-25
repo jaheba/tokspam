@@ -390,6 +390,13 @@ fn scan_tokens<
                     scores.indentation_depth = scores.indentation_depth.max(indents + 1);
                 }
             }
+            // The lexer has already attempted the push. Fixed storage exhaustion
+            // is incomplete measurement, even when this token also crosses a score limit.
+            if token.kind == Kind::StorageLimit
+                || (token.kind == Kind::NestingLimit && lexer.storage_failed())
+            {
+                return Err(current.rejection(Reason::Storage, &token.range));
+            }
             if limits.max_tokens.is_some_and(|limit| tokens_used > limit) {
                 return Err(current.rejection(Reason::TokenCount, &token.range));
             }
@@ -404,12 +411,7 @@ fn scan_tokens<
             }
             let lexical_reason = match token.kind {
                 Kind::Limit => Some(Reason::LexicalStructure),
-                Kind::StorageLimit => Some(Reason::Storage),
-                Kind::NestingLimit => Some(if lexer.storage_failed() {
-                    Reason::Storage
-                } else {
-                    Reason::DelimiterDepth
-                }),
+                Kind::NestingLimit => Some(Reason::DelimiterDepth),
                 Kind::IndentationLimit => Some(Reason::Indentation),
                 _ => None,
             };
