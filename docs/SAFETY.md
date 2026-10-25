@@ -12,9 +12,26 @@ Parents retain scalar state and entries below a segment boundary; children borro
 the remaining structural budget and use entries above that boundary. Restoring a
 parent discards the child segment without copying stacks.
 
-Quoted annotations share cumulative token and byte/work accounting. Their strings
-are not decoded, expanded, or executed. `Literal` operands and `Annotated` metadata
-are excluded using lexical names, without resolving aliases.
+Quoted annotations share cumulative token and byte/work accounting. Plain escaped
+annotation strings are decoded once per annotation level into a shared UTF-8 text
+arena; unescaped strings remain borrowed. Raw and byte literals keep their existing
+semantics. No source is executed. `Literal` operands and `Annotated` metadata are
+excluded using lexical names, without resolving aliases.
+
+The text arena is fallible and obeys the same storage choice as the eight stacks.
+Fixed storage reserves the selected capacity in bytes for this ninth scratch buffer.
+Parent text is append-only while a child runs; saved indices survive relocation,
+and returning truncates only bytes allocated by the finished frame. Each append
+preserves UTF-8, avoiding unsafe conversion or repeated full-string validation on
+resume. Decoder failures stop before any child frame can use partial output.
+
+Charge the raw decoding pass and the decoded-source scan separately to shared
+work accounting. Decoding does not expand byte length; it cannot evade the byte
+bound used by structural-only shortcuts. Quotes, backslashes, control escapes,
+octal, hex, and numeric Unicode escapes are supported. Unknown escapes preserve
+their backslash. Named Unicode escapes require a name database, and isolated
+surrogates cannot inhabit Rust str; both return `AnnotationEscape` without guessing
+or substituting characters.
 
 ## Storage and arithmetic
 

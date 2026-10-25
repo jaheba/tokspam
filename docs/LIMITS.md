@@ -19,7 +19,7 @@ strictly greater than the configured value.
 | `display_items` | `max_display_items` | Maximum immediate list/set/dict or tuple-display items. Comprehension clauses are excluded. |
 | `slice_items` | `max_slice_items` | Maximum comma-separated subscript items. |
 | `interpolation_fields` | `max_interpolation_fields` | Maximum replacement fields at one f/t-string or format-spec level, carrying counts across adjacent strings. |
-| `scanned_bytes` | — | Original bytes plus each quoted-type interior scheduled for rescan. |
+| `scanned_bytes` | — | Original bytes plus each quoted-type rescan and raw escape-decoding pass. |
 | `work_units` | `max_work_units` | Cumulative scanned bytes plus emitted tokens; a resource budget, not a structural violation. |
 
 Depths count structural additions to a leaf, so an isolated name has AST depth
@@ -35,8 +35,9 @@ before that token reaches the structural tracker. Partial scores therefore shoul
 not be treated as complete measurements.
 
 `scanned_bytes` charges the full outer input once and charges a type-string
-interior when scheduled. It measures budgeted work, not the precise cursor position
-at interruption. Repeated nested interpretation consumes shared work, not a fresh
+interior when scheduled. Escaped literals additionally charge the raw decoding
+pass, then the decoded source separately. It measures budgeted work, not the
+precise cursor position at interruption. Repeated nested interpretation consumes shared work, not a fresh
 per-child allowance.
 
 No universal safe threshold exists for all Python parsers. Select limits using

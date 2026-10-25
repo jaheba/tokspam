@@ -33,7 +33,10 @@ field modes as well as brackets.
 Quoted types are scanned using an explicit work stack. A child scan inherits its
 parent's remaining structural budget, and its tokens and bytes contribute to the
 same cumulative work count. `Literal` values and `Annotated` metadata are excluded
-using lexical names; Tokspam does not resolve aliases or decode string escapes.
+using lexical names. Escaped plain annotation strings are decoded into reusable
+scratch before scanning their values; ordinary literals remain source slices.
+Tokspam does not resolve aliases. Named Unicode escapes (`\N{...}`) and isolated
+surrogates stop annotation measurement explicitly with `AnnotationEscape`.
 
 These scores describe Tokspam's lexical model. Tokspam does not validate full
 Python syntax, execute source, or guarantee that a particular parser will handle
@@ -85,7 +88,8 @@ let report = checker.analyze("x = [1, 2]");
 assert!(report.is_complete());
 ```
 
-The capacity is an entry count **per scratch stack**, independent of score limits.
+The capacity is an entry count **per scratch stack**, plus a byte capacity for
+decoded annotation text, independent of score limits.
 It is reserved during construction; scans cannot allocate additional scratch.
 Exhausting it yields `Reason::Storage`, not a complexity violation.
 

@@ -33,7 +33,9 @@ Oversized source is rejected before scratch allocation.
 
 Read `docs/SAFETY.md` before changing resource accounting or claiming parser safety.
 It records the intended invariants and outstanding release requirements.
-Quoted-annotation scanning uses an explicit work stack.
+Quoted-annotation scanning uses an explicit work stack. Escaped annotation literals
+use reusable UTF-8 scratch; charge decoding and rescanning separately to shared work.
+Fixed storage also bounds the decoded-text arena in bytes. Preserve original-source error ranges.
 There are no arbitrary configuration ceilings. Optional shared work budgets and fixed storage can bound scans.
 Preserve the distinction between these implemented bounds and parser-safety claims.
 

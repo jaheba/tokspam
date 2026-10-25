@@ -76,4 +76,7 @@ pub struct Token {
     // Undecoded contents of a non-byte plain string for annotation screening.
     // Interpolated strings instead emit their expression tokens directly.
     pub contents: Option<Range<usize>>,
+    // Raw literals keep their backslashes. Only non-raw escaped annotation
+    // contents need materialization before being scanned as Python source.
+    pub needs_decode: bool,
 }

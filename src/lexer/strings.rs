@@ -34,6 +34,7 @@ impl Lexer<'_, '_> {
         // Plain strings are a single token. Retain only their interior range;
         // the annotation scanner decides whether those bytes need another scan.
         let inner = self.position;
+        let mut escaped = false;
         while self.position < bytes.len() {
             let text = &bytes[self.position..];
             let offset = if width == 1 {
@@ -54,6 +55,8 @@ impl Lexer<'_, '_> {
                 let mut token = self.token(Kind::String, start);
                 if !prefix.iter().any(|b| matches!(b, b'b' | b'B')) {
                     token.contents = Some(inner..end);
+                    token.needs_decode =
+                        escaped && !prefix.iter().any(|b| matches!(b, b'r' | b'R'));
                 }
                 return token;
             }
@@ -63,6 +66,7 @@ impl Lexer<'_, '_> {
             }
             self.position += 1;
             if byte == b'\\' && self.position < bytes.len() {
+                escaped = true;
                 // Skip an escaped scalar without decoding it or leaving the
                 // cursor in the middle of a multibyte UTF-8 character.
                 self.position += self.source[self.position..]

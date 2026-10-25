@@ -4,6 +4,7 @@ use crate::Rejection;
 /// Observed maxima and cumulative counts. In incomplete reports these are lower
 /// bounds, except `source_bytes`, which always describes the entire input.
 /// Annotation rescans contribute tokens/work and inherited structural depth.
+/// Escaped annotations also charge their raw decoding pass to scanned bytes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Scores {
     pub source_bytes: usize,
@@ -41,7 +42,8 @@ impl Report {
 pub enum Storage {
     #[default]
     Growing,
-    /// Reserve this many entries in each scratch stack. Scans never allocate;
+    /// Reserve this many entries in each scratch stack and this many bytes for
+    /// decoded annotation text. Scans never allocate;
     /// exhausting any stack returns `Storage` rather than rejecting a score.
     Fixed { capacity: usize },
 }

@@ -79,8 +79,8 @@ rates, a held-out compatibility study, and a common performance harness. Existin
 for reusable results and exact version/configuration coverage before importing any measurements into the manuscript.
 The brief sanitizer campaign recorded in `SAFETY.md` supports only its tested conditions.
 
-Lexical annotation detection does not resolve aliases or shadowing, and escaped or concatenated annotations are not
-decoded. Conservative estimates can reject valid code; unmodeled syntax or downstream behavior may escape them.
+Lexical annotation detection does not resolve aliases or shadowing, and adjacent annotation literals are not combined. Supported escapes in plain quoted
+annotations are decoded; Unicode-name lookup and isolated surrogates remain explicit stops. Conservative estimates can reject valid code; unmodeled syntax or downstream behavior may escape them.
 Parser changes, platform stack sizes, and corpus selection limit generalization. Novelty also needs a related-work
 review covering parser resource limits, bounded lexical filters, algorithmic complexity attacks, and process isolation.
 The manuscript should distinguish experimentally observed coverage from any formally established property.

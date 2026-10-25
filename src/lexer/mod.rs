@@ -180,6 +180,7 @@ impl<'a, 's> Lexer<'a, 's> {
             kind,
             range: start..self.position,
             contents: None,
+            needs_decode: false,
         }
     }
 

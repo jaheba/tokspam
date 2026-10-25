@@ -4,7 +4,7 @@ const reasonNames = [
   "Pass", "Source size", "Token count", "Token size", "Nesting", "Indentation",
   "AST depth", "Lexical structure", "Quoted annotation", "Storage",
   "Call arguments", "Parameters", "Display items", "Slice items",
-  "Interpolation fields", "Inconclusive", "Accounting overflow", "Invalid UTF-8", "Lexical depth",
+  "Interpolation fields", "Inconclusive", "Accounting overflow", "Invalid UTF-8", "Lexical depth", "Annotation escape",
 ];
 
 const validationDetails = {
@@ -18,6 +18,7 @@ const validationDetails = {
   8: ["Quoted annotation screening", "A quoted annotation needed more nested screening than allowed, or its contents failed a structural check. The range points to the outer string."],
   9: ["Scratch storage", "The scan could not reserve enough scratch memory to continue."],
   16: ["Accounting overflow", "The scan could not continue with representable counters."],
+  19: ["Unsupported annotation escape", "A quoted type uses a named Unicode escape or an isolated surrogate that Tokspam cannot decode."],
   18: ["Lexical depth", "The active lexer context depth exceeded its configured threshold."],
   10: ["Call argument count", "A call contained more arguments than its configured budget."],
   11: ["Parameter count", "A definition contained more parameters than its configured budget."],
@@ -189,7 +190,7 @@ function showRejection(code, start, end, bytes, meta, settings) {
   const limit = configuredLimit(code, settings);
   const limitText = formatLimit(code, limit);
 
-  const title = [9, 15, 16].includes(code) ? "Screening incomplete" : `${reasonNames[code] ?? "Source"} rejected`;
+  const title = [9, 15, 16, 19].includes(code) ? "Screening incomplete" : `${reasonNames[code] ?? "Source"} rejected`;
   showResult("reject", title, explanation, meta);
   resultRule.textContent = rule;
   resultLimit.textContent = limitText;

@@ -14,8 +14,9 @@ recording out and can use acceptance proofs.
 
 The checker rejects oversized source before initializing its scratch buffers.
 It then consumes the streaming lexer one token at a time. Tokens refer to byte
-ranges in the caller's source: strings are not decoded, source is not copied,
-and there is no collected token list.
+ranges in their input: the lexer does not decode strings or collect a token list.
+Only escaped plain annotation strings need decoded scratch before a child scan;
+ordinary source and unescaped annotations remain borrowed.
 
 Each token passes through shared work budgets, lexical checks, construct-width
 tracking, structural rules, and annotation-position tracking. This order matters:
@@ -61,6 +62,13 @@ Marks are indices, so growing a backing vector cannot invalidate them.
 Rejections inside quoted types point to the enclosing annotation in the original
 source. Exhausting the optional work budget returns `Inconclusive`; scratch exhaustion
 returns `Storage`. Neither establishes a complexity violation.
+
+`src/checker/escapes.rs` decodes escaped annotations into one shared text arena.
+Frames retain ranges and allocation marks; nested decoding can append without
+invalidating indices into parent text. Each append preserves UTF-8, so resuming
+needs no validation pass over the whole parent. Decoding and subsequent scanning
+are both charged to the work budget. Unsupported named Unicode escapes and
+isolated surrogates return `AnnotationEscape` instead of a guessed value.
 
 ## Reuse and allocation
 

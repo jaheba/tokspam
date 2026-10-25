@@ -331,3 +331,56 @@ fn allocation_failure_stops_measurement_and_allows_reuse() {
         assert!(checker.analyze(&source).is_complete());
     }
 }
+
+#[test]
+fn annotation_decoding_respects_fixed_storage_and_retains_growing_capacity() {
+    let source = r#"x: 'List[\'int\']'"#;
+    let mut fixed =
+        Checker::with_storage(Limits::default(), Storage::Fixed { capacity: 64 }).unwrap();
+    let expected = tokspam::analyze(source);
+    assert!(expected.is_complete());
+    for _ in 0..3 {
+        assert_eq!(
+            allocations(|| {
+                assert_eq!(fixed.analyze(source), expected);
+                Ok(())
+            }),
+            Allocations::default()
+        );
+    }
+    let mut small =
+        Checker::with_storage(Limits::default(), Storage::Fixed { capacity: 8 }).unwrap();
+    assert_eq!(
+        allocations(|| {
+            assert_eq!(
+                small.analyze(source).stopped.unwrap().reason,
+                tokspam::Reason::Storage
+            );
+            assert!(small.analyze("x: 'int'").is_complete());
+            Ok(())
+        }),
+        Allocations::default()
+    );
+    let mut growing = Checker::default();
+    assert!(growing.analyze(source).is_complete());
+    assert_eq!(
+        allocations(|| {
+            assert_eq!(growing.analyze(source), expected);
+            Ok(())
+        }),
+        Allocations::default()
+    );
+}
+
+#[test]
+fn annotation_decode_allocation_failures_are_incomplete_and_reusable() {
+    let source = format!(r#"x: "{}int{}""#, r"\x5b".repeat(100), r"\x5d".repeat(100));
+    for successful_allocations in 0..25 {
+        let mut checker = Checker::default();
+        FAIL_AFTER.with(|remaining| remaining.set(Some(successful_allocations)));
+        let report = checker.analyze(&source);
+        FAIL_AFTER.with(|remaining| remaining.set(None));
+        assert_eq!(report.stopped.unwrap().reason, tokspam::Reason::Storage);
+        assert!(checker.analyze(&source).is_complete());
+    }
+}

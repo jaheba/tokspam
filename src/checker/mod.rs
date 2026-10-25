@@ -4,6 +4,7 @@
 //! lexer and applies budgets and structural rules to each token before continuing.
 
 mod annotations;
+mod escapes;
 #[cfg(test)]
 mod fast_path_tests;
 mod scratch;
@@ -151,6 +152,10 @@ struct ScanFrame {
     budget: usize,
     ast_budget: Option<usize>,
     annotation_source: bool,
+    // Source offsets address either caller input or the shared decoded arena.
+    decoded: bool,
+    needs_decode: bool,
+    decoded_mark: Option<usize>,
     depth: usize,
     parser_offset: usize,
     ast_offset: usize,
@@ -181,6 +186,7 @@ impl ScanFrame {
                         | Reason::Storage
                         | Reason::Overflow
                         | Reason::LexicalStructure
+                        | Reason::AnnotationEscape
                 ) {
                 Reason::QuotedAnnotation
             } else {
@@ -247,6 +253,9 @@ fn scan_tokens<
             limits.max_ast_depth
         },
         annotation_source: false,
+        decoded: false,
+        needs_decode: false,
+        decoded_mark: None,
         depth: 0,
         parser_offset: 0,
         ast_offset: 0,
@@ -280,13 +289,18 @@ fn scan_tokens<
             return Ok(());
         };
         let current = &mut work[index];
-        let frame_source = &source[current.source.clone()];
         let ScanScratch {
+            decoded,
             lexer: lexer_scratch,
             scanner,
             annotations,
             widths,
         } = &mut *scratch;
+        let frame_source = if current.decoded {
+            &decoded[current.source.clone()]
+        } else {
+            &source[current.source.clone()]
+        };
 
         // Parent entries remain below the active segment in the shared buffers;
         // each frame retains its scalar tracking state.
@@ -482,6 +496,9 @@ fn scan_tokens<
                             budget: remaining,
                             ast_budget: ast_remaining,
                             annotation_source: true,
+                            decoded: current.decoded,
+                            needs_decode: token.needs_decode,
+                            decoded_mark: None,
                             depth: current.depth + 1,
                             parser_offset: current.parser_offset + scanner.total,
                             ast_offset: current.ast_offset + scanner.ast_total,
@@ -519,7 +536,38 @@ fn scan_tokens<
             }
         };
 
-        if let Some(child) = next_child {
+        if let Some(mut child) = next_child {
+            if child.needs_decode {
+                let mark = decoded.len();
+                child.source =
+                    escapes::decode(source, child.source.clone(), child.decoded, decoded).map_err(
+                        |reason| Rejection {
+                            reason,
+                            range: child
+                                .outer_annotation
+                                .clone()
+                                .expect("annotation frame has an outer range"),
+                        },
+                    )?;
+                child.decoded = true;
+                child.needs_decode = false;
+                child.decoded_mark = Some(mark);
+                // The existing charge covers the raw decoding pass. Charge the
+                // decoded source separately before its token scan can begin.
+                bytes_scanned = bytes_scanned
+                    .checked_add(child.source.len())
+                    .ok_or_else(|| child.rejection(Reason::Overflow, &(0..0)))?;
+                if bytes_scanned.checked_mul(16).is_none() {
+                    return Err(child.rejection(Reason::Overflow, &(0..0)));
+                }
+                if COLLECT {
+                    scores.scanned_bytes = bytes_scanned;
+                    scores.work_units = bytes_scanned + tokens_used;
+                }
+                if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
+                    return Err(child.rejection(Reason::Inconclusive, &(0..0)));
+                }
+            }
             work[index].saved = Some(scratch.suspend());
             if !work.push(child) {
                 return Err(Rejection {
@@ -531,7 +579,10 @@ fn scan_tokens<
                 });
             }
         } else {
-            work.pop();
+            let finished = work.pop().expect("active scan frame");
+            if let Some(mark) = finished.decoded_mark {
+                decoded.truncate(mark);
+            }
             if let Some(parent) = work.last_mut() {
                 scratch.restore(parent.saved.take().expect("parent suspended before child"));
             }

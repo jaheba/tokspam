@@ -28,7 +28,8 @@ observed structure and is retained across checks. Allocation failure stops the s
 with `Reason::Storage`; it is not evidence of a score threshold violation.
 
 `Checker::with_storage(limits, Storage::Fixed { capacity })` reserves `capacity`
-entries for each of eight shared stacks, independently of the policy. It returns
+entries for each of eight shared stacks, plus `capacity` bytes for decoded
+annotation text, independently of the policy. It returns
 `StorageError` if reservation fails. No scanning allocations occur in this mode.
 A capacity of zero is valid but cannot start a scan. A capacity of one can scan
 simple expressions but cannot retain a nested bracket or annotation frame.
@@ -45,7 +46,8 @@ for unvisited input.
 
 `Inconclusive` denotes the optional cumulative work budget, `Storage` denotes
 scratch exhaustion, and `Overflow` denotes unrepresentable accounting. Lexical
-failures report `LexicalStructure`. A structural threshold inside a quoted type
+failures report `LexicalStructure`. Unsupported named Unicode escapes and isolated
+surrogates in annotations report `AnnotationEscape`. A structural threshold inside a quoted type
 is attributed to its enclosing annotation and reported as `QuotedAnnotation`.
 
 Byte ranges refer to the caller's original UTF-8 source, including nested scans.

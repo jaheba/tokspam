@@ -11,6 +11,8 @@ pub enum Reason {
     Indentation,
     AstDepth,
     LexicalStructure,
+    /// An annotation escape needs an unsupported name lookup or string representation.
+    AnnotationEscape,
     QuotedAnnotation,
     /// Scratch capacity or allocation was exhausted; no score violation implied.
     Storage,

@@ -225,3 +225,99 @@ fn counts_and_source_sizes_can_exceed_former_ceilings() {
     assert_eq!(report.scores.source_bytes, source.len());
     assert_eq!(report.scores.tokens, 0);
 }
+
+#[test]
+fn escaped_forward_annotation_matches_its_unescaped_value() {
+    // CPython's test_typing.test_double_forward: each annotation level decodes
+    // its own literal once; an ordinary string remains a borrowed source slice.
+    let escaped = r#"def foo(a: 'List[\'int\']'): pass"#;
+    let plain = r#"def foo(a: "List['int']"): pass"#;
+    let actual = analyze(escaped);
+    let expected = analyze(plain);
+    assert!(actual.is_complete(), "{actual:?}");
+    assert_eq!(actual.scores.annotation_depth, 2);
+    assert_eq!(actual.scores.tokens, expected.scores.tokens);
+    assert_eq!(actual.scores.parser_depth, expected.scores.parser_depth);
+    assert_eq!(actual.scores.ast_depth, expected.scores.ast_depth);
+    assert_eq!(actual.scores.slice_items, expected.scores.slice_items);
+    assert!(check(escaped, &Limits::screening()).is_ok());
+    assert!(analyze(r#"x: r"List['int']""#).is_complete());
+    assert_eq!(
+        analyze(r#"x: r"List[\'int\']""#).stopped.unwrap().reason,
+        Reason::LexicalStructure
+    );
+}
+
+#[test]
+fn decoded_structure_and_decoding_work_obey_limits() {
+    let source = r#"x: "\x5bint\x5d""#;
+    let report = analyze(source);
+    assert!(report.is_complete(), "{report:?}");
+    assert_eq!(report.scores.parser_depth, 1);
+    assert_eq!(
+        report.scores.scanned_bytes,
+        source.len() + r"\x5bint\x5d".len() + "[int]".len()
+    );
+    let mut checker = Checker::new(Limits {
+        max_work_units: Some(report.scores.work_units - 1),
+        ..Limits::default()
+    });
+    assert_eq!(
+        checker.analyze(source).stopped.unwrap().reason,
+        Reason::Inconclusive
+    );
+    let source = format!(r#"x: "{}int{}""#, r"\x5b".repeat(101), r"\x5d".repeat(101));
+    let mut checker = Checker::new(Limits::screening());
+    let rejection = checker.check(&source).unwrap_err();
+    assert_eq!(rejection.reason, Reason::QuotedAnnotation);
+    assert_eq!(rejection.range, 3..source.len());
+}
+
+#[test]
+fn malformed_annotations_and_unsupported_escapes_remain_incomplete() {
+    assert_eq!(
+        analyze(r#"def foo(a: "Node[T"): pass"#)
+            .stopped
+            .unwrap()
+            .reason,
+        Reason::LexicalStructure
+    );
+    for source in [r#"x: "\N{LEFT SQUARE BRACKET}int]""#, r#"x: "\ud800""#] {
+        assert_eq!(
+            analyze(source).stopped.unwrap().reason,
+            Reason::AnnotationEscape
+        );
+    }
+    assert_eq!(
+        analyze(r#"x: Literal['\N{LATIN CAPITAL LETTER A}']"#)
+            .scores
+            .annotation_depth,
+        0
+    );
+}
+
+#[test]
+fn nested_decoding_restores_parent_text_and_original_error_ranges() {
+    fn quote(value: &str) -> String {
+        format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+    }
+    let mut value = "int".to_owned();
+    for _ in 0..5 {
+        value = format!("list[{}]", quote(&value));
+    }
+    let source = format!("x: {}\ny: 'str'", quote(&value));
+    let expected = analyze(&source);
+    assert!(expected.is_complete(), "{expected:?}");
+    assert_eq!(expected.scores.annotation_depth, 6);
+    let mut fixed =
+        Checker::with_storage(Limits::default(), Storage::Fixed { capacity: 4096 }).unwrap();
+    assert_eq!(fixed.analyze(&source), expected);
+    let limits = Limits {
+        max_nesting_depth: Some(2),
+        ..Limits::default()
+    };
+    let error = Checker::new(limits).analyze(&source).stopped.unwrap();
+    assert_eq!(error.reason, Reason::QuotedAnnotation);
+    assert_eq!(error.range, 3..source.find('\n').unwrap());
+    assert!(fixed.analyze("x = 1").is_complete());
+}

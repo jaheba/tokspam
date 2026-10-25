@@ -1,6 +1,7 @@
 //! Own shared buffers and save/restore their active annotation segments.
 
 use super::annotations::{AnnotationState, AnnotationTracker};
+use super::escapes::DecodedText;
 use super::widths::{WidthState, WidthTracker};
 use crate::Storage;
 use crate::lexer::LexerScratch;
@@ -10,6 +11,9 @@ use crate::stack::{Mark, Stack};
 // One set of shared buffers serves every scan. Work frames save only scalar
 // state and segment marks; suspended entries remain below the active base.
 pub(super) struct ScanScratch {
+    // Decoded strings share one append-only arena. Frames remember its length
+    // on entry so returning from a child releases only that child's bytes.
+    pub(super) decoded: DecodedText,
     pub(super) lexer: LexerScratch,
     pub(super) scanner: Scanner,
     pub(super) annotations: AnnotationTracker,
@@ -43,6 +47,7 @@ impl ScanScratch {
     }
 
     pub(super) fn clear_segments(&mut self) {
+        self.decoded.reset();
         self.lexer.clear_segments();
         self.scanner.clear_segments();
         self.annotations.brackets.reset();
@@ -50,7 +55,8 @@ impl ScanScratch {
     }
 
     pub(super) fn failed(&self) -> bool {
-        self.lexer.failed()
+        self.decoded.failed()
+            || self.lexer.failed()
             || self.scanner.failed()
             || self.annotations.brackets.failed()
             || self.widths.frames.failed()
@@ -62,6 +68,7 @@ impl ScanScratch {
             Storage::Fixed { capacity } => (capacity, true),
         };
         Self {
+            decoded: DecodedText::with_storage(capacity, fixed),
             lexer: LexerScratch::with_storage(capacity, capacity, fixed),
             scanner: Scanner::with_storage(capacity, fixed),
             annotations: AnnotationTracker {

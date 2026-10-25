@@ -145,6 +145,7 @@ fn reason_code(reason: Reason) -> u32 {
         Reason::Indentation => 5,
         Reason::AstDepth => 6,
         Reason::LexicalStructure => 7,
+        Reason::AnnotationEscape => 19,
         Reason::QuotedAnnotation => 8,
         Reason::Storage => 9,
         Reason::Overflow => 16,
