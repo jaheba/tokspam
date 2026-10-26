@@ -22,6 +22,9 @@ pub struct Scores {
     pub display_items: usize,
     pub slice_items: usize,
     pub interpolation_fields: usize,
+    pub boolean_operands: usize,
+    pub with_items: usize,
+    pub comprehension_filters: usize,
 }
 
 /// `stopped` distinguishes a score violation from work/storage exhaustion,

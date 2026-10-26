@@ -131,6 +131,8 @@ fn stops_explain_partial_scores() {
 fn checking_and_analysis_agree_at_score_boundaries() {
     let sources = [
         "a + b + c",
+        "x = 1 if if if if if if",
+        r#"x: "it's""#,
         "---x",
         "[[x]]",
         "x: \"list['int']\"",
@@ -242,10 +244,7 @@ fn escaped_forward_annotation_matches_its_unescaped_value() {
     assert_eq!(actual.scores.slice_items, expected.scores.slice_items);
     assert!(check(escaped, &Limits::screening()).is_ok());
     assert!(analyze(r#"x: r"List['int']""#).is_complete());
-    assert_eq!(
-        analyze(r#"x: r"List[\'int\']""#).stopped.unwrap().reason,
-        Reason::LexicalStructure
-    );
+    assert!(analyze(r#"x: r"List[\'int\']""#).is_complete());
 }
 
 #[test]
@@ -274,14 +273,8 @@ fn decoded_structure_and_decoding_work_obey_limits() {
 }
 
 #[test]
-fn malformed_annotations_and_unsupported_escapes_remain_incomplete() {
-    assert_eq!(
-        analyze(r#"def foo(a: "Node[T"): pass"#)
-            .stopped
-            .unwrap()
-            .reason,
-        Reason::LexicalStructure
-    );
+fn invalid_annotation_text_finishes_but_unsupported_decoding_remains_incomplete() {
+    assert!(analyze(r#"def foo(a: "Node[T"): pass"#).is_complete());
     for source in [r#"x: "\N{LEFT SQUARE BRACKET}int]""#, r#"x: "\ud800""#] {
         assert_eq!(
             analyze(source).stopped.unwrap().reason,

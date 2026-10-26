@@ -145,7 +145,7 @@ impl Lexer<'_, '_> {
                         )?;
                     } else {
                         weight += match word {
-                            b"not" | b"await" | b"yield" | b"async" => 1,
+                            b"not" | b"await" | b"yield" | b"async" | b"if" => 1,
                             b"else" => 2,
                             _ => 0,
                         };

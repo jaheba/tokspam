@@ -11,6 +11,8 @@ fn simple_prefix_matches_detailed_scanning() {
         "x != y <= z >> 2 // 3\n",
         "async await yield not in is and or if for\n",
         "case, x, 1.2e3, 0xdead\n",
+        "x = 1 if if if if if if\n",
+        "x: \"it's\"\n",
         "else x\n",
         "elif x\n",
         "lambda x\n",

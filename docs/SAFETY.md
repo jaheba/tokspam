@@ -66,10 +66,15 @@ skip annotation work that affects a configured token or work budget.
 Reported depths are heuristic estimates. AST accounting combines sibling subtree
 heights by maximum plus an operator node and keeps a fixed six-entry precedence
 fold per structural level. This fixed array represents the six modeled precedence
-classes; it is not a configurable input-depth ceiling.
+classes; it is not a configurable input-depth ceiling. Operand-less `if` tokens
+inside expressions add conservative AST depth for conditional nodes a parser may build
+during syntax-error recovery; these charges end with the expression.
 
 Malformed and Unicode input must terminate with valid UTF-8 source ranges. Invalid
-or unsupported lexical structure stops measurement explicitly. Nested errors refer
+outer lexical structure stops measurement explicitly. A lexical failure in quoted
+annotation text finishes only that child scan: invalid type text is still a valid
+outer string. Its already-charged work and observed scores remain counted. Resource,
+decoding and structural limit failures are not suppressed. Nested errors refer
 to an enclosing range in the original source. No incomplete report may present
 its partial maxima as completed measurements.
 

@@ -27,6 +27,8 @@ pub(super) struct WidthFrame {
     has_comma: bool,
     marker_only: bool,
     comprehension: bool,
+    comprehension_filters: usize,
+    boolean_operands: usize,
     adjacent_fields: usize,
 }
 
@@ -39,6 +41,8 @@ impl Default for WidthFrame {
             has_comma: false,
             marker_only: false,
             comprehension: false,
+            comprehension_filters: 0,
+            boolean_operands: 0,
             adjacent_fields: 0,
         }
     }
@@ -57,6 +61,11 @@ pub(super) struct WidthState {
     pending_def: bool,
     pending_non_call: bool,
     root_adjacent_fields: usize,
+    root_boolean_operands: usize,
+    with_depth: Option<usize>,
+    with_parenthesized_depth: Option<usize>,
+    pending_with_paren: bool,
+    with_items: usize,
 }
 
 impl WidthTracker {
@@ -75,6 +84,11 @@ impl WidthTracker {
         self.state.pending_def = false;
         self.state.pending_non_call = false;
         self.state.root_adjacent_fields = 0;
+        self.state.root_boolean_operands = 0;
+        self.state.with_depth = None;
+        self.state.with_parenthesized_depth = None;
+        self.state.pending_with_paren = false;
+        self.state.with_items = 0;
     }
 
     #[inline]
@@ -86,6 +100,82 @@ impl WidthTracker {
         limits: &Limits,
         scores: &mut Scores,
     ) -> Option<Reason> {
+        let depth = self.frames.len();
+        if kind == Kind::Name && &source[range.clone()] == "with" {
+            self.state.with_depth = Some(depth);
+            self.state.with_parenthesized_depth = None;
+            self.state.pending_with_paren = true;
+            self.state.with_items = 1;
+            if COLLECT {
+                scores.with_items = scores.with_items.max(1);
+            }
+            if limits.max_with_items == Some(0) {
+                return Some(Reason::WithItems);
+            }
+        } else if self.state.pending_with_paren {
+            if kind == Kind::Lpar {
+                self.state.with_parenthesized_depth = Some(depth + 1);
+            }
+            self.state.pending_with_paren = false;
+        }
+
+        if kind == Kind::Comma
+            && (self.state.with_depth == Some(depth)
+                || self.state.with_parenthesized_depth == Some(depth))
+        {
+            self.state.with_items += 1;
+            if COLLECT {
+                scores.with_items = scores.with_items.max(self.state.with_items);
+            }
+            if limits
+                .max_with_items
+                .is_some_and(|limit| self.state.with_items > limit)
+            {
+                return Some(Reason::WithItems);
+            }
+        }
+        if kind == Kind::Rpar && self.state.with_parenthesized_depth == Some(depth) {
+            self.state.with_parenthesized_depth = None;
+        }
+        if self.state.with_depth == Some(depth)
+            && matches!(kind, Kind::Colon | Kind::Newline | Kind::Semi)
+        {
+            self.state.with_depth = None;
+            self.state.with_parenthesized_depth = None;
+        }
+
+        let boolean_operands = self
+            .frames
+            .last_mut()
+            .map_or(&mut self.state.root_boolean_operands, |frame| {
+                &mut frame.boolean_operands
+            });
+        if matches!(kind, Kind::And | Kind::Or) {
+            *boolean_operands += if *boolean_operands == 0 { 2 } else { 1 };
+            if COLLECT {
+                scores.boolean_operands = scores.boolean_operands.max(*boolean_operands);
+            }
+            if limits
+                .max_boolean_operands
+                .is_some_and(|limit| *boolean_operands > limit)
+            {
+                return Some(Reason::BooleanOperands);
+            }
+        } else if matches!(
+            kind,
+            Kind::Comma
+                | Kind::Colon
+                | Kind::Equal
+                | Kind::Newline
+                | Kind::Semi
+                | Kind::For
+                | Kind::If
+                | Kind::Elif
+                | Kind::Else
+        ) {
+            *boolean_operands = 0;
+        }
+
         if kind == Kind::Name && &source[range.clone()] == "def" {
             self.state.pending_def = true;
         }
@@ -159,6 +249,8 @@ impl WidthTracker {
                 has_comma: false,
                 marker_only: false,
                 comprehension: false,
+                comprehension_filters: 0,
+                boolean_operands: 0,
                 adjacent_fields: 0,
             }) {
                 return Some(Reason::Storage);
@@ -220,11 +312,29 @@ impl WidthTracker {
                     self.state.root_adjacent_fields = 0;
                 }
             }
-            if kind == Kind::For
-                && let Some(frame) = self.frames.last_mut()
-                && matches!(frame.kind, WidthKind::Display)
-            {
-                frame.comprehension = true;
+            if let Some(frame) = self.frames.last_mut() {
+                if kind == Kind::For
+                    && matches!(
+                        frame.kind,
+                        WidthKind::Display | WidthKind::Parenthesized | WidthKind::Call
+                    )
+                {
+                    frame.comprehension = true;
+                    frame.comprehension_filters = 0;
+                } else if kind == Kind::If && frame.comprehension {
+                    frame.comprehension_filters += 1;
+                    if COLLECT {
+                        scores.comprehension_filters = scores
+                            .comprehension_filters
+                            .max(frame.comprehension_filters);
+                    }
+                    if limits
+                        .max_comprehension_filters
+                        .is_some_and(|limit| frame.comprehension_filters > limit)
+                    {
+                        return Some(Reason::ComprehensionFilters);
+                    }
+                }
             }
             if kind == Kind::Colon
                 && let Some(WidthFrame {

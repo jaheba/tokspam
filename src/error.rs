@@ -24,6 +24,9 @@ pub enum Reason {
     DisplayItems,
     SliceItems,
     InterpolationFields,
+    BooleanOperands,
+    WithItems,
+    ComprehensionFilters,
     /// The optional cumulative work budget was exhausted before establishing
     /// a structural violation. Storage exhaustion is reported separately.
     Inconclusive,
