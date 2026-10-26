@@ -55,6 +55,8 @@ struct Level {
     /// `lambda` keywords whose `:` has not arrived, so commas are still
     /// separating parameters rather than ending a body.
     pending_lambdas: usize,
+    // Ruff can recover operand-less `if` tokens as nested conditionals.
+    recovery_ifs: usize,
     // Strictly increasing precedences in 1..=6 need at most six entries.
     // Separate arrays avoid padding at every structural level. Depths use
     // usize so analysis is not restricted to a small implementation ceiling.
@@ -193,6 +195,13 @@ impl Scanner {
         let starts_statement = self.state.statement_start;
         if self.state.ast_limit.is_some() {
             self.observe_statement_start(kind);
+
+            // An `if` without a left operand cannot be a valid conditional.
+            // Ruff's recovery may still retain a nested conditional for it.
+            if kind == Kind::If && !self.state.prev_ends_operand && !starts_statement {
+                self.top().recovery_ifs += 1;
+                self.state.ast_total += 1;
+            }
 
             // Calls, subscripts and attributes retain their left operand in the
             // AST after the corresponding parser frame has returned.
@@ -341,7 +350,7 @@ impl Scanner {
             let top = self.top();
             top.ast_peak = top
                 .ast_peak
-                .max(top.tight + top.loose + top.expression_depth);
+                .max(top.tight + top.loose + top.recovery_ifs + top.expression_depth);
         }
         if COLLECT {
             self.state.peak_parser = self.state.peak_parser.max(self.state.total);
@@ -431,7 +440,7 @@ impl Scanner {
             let level = self.levels.pop().expect("length checked above");
             let shared = 1 + level.tight + level.loose;
             self.state.total -= shared;
-            self.state.ast_total -= shared + level.expression_depth;
+            self.state.ast_total -= shared + level.recovery_ifs + level.expression_depth;
             if self.state.ast_limit.is_some() {
                 // Closed children still belong to the current operand. Preserve
                 // their peak before a following postfix or binary operator wraps it.
@@ -466,11 +475,12 @@ impl Scanner {
     fn reset_level(&mut self) {
         let top = self.top();
         let released = top.tight + top.loose;
-        let ast_released = released + top.expression_depth;
+        let ast_released = released + top.recovery_ifs + top.expression_depth;
         top.tight = 0;
         top.loose = 0;
         top.expression_depth = 0;
         top.binary_len = 0;
+        top.recovery_ifs = 0;
         top.operand_depth = 0;
         self.state.total -= released;
         self.state.ast_total -= ast_released;
@@ -531,6 +541,7 @@ impl Level {
             tight: 0,
             loose: 0,
             pending_lambdas: 0,
+            recovery_ifs: 0,
             binary_precedences: [0; 6],
             binary_left_depths: [0; 6],
             binary_len: 0,

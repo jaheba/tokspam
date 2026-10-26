@@ -24,19 +24,32 @@ all tokens. Structural trackers maintain open levels and operator state. They
 estimate parser recursion and AST depth, preserving the maximum across sibling
 expressions rather than adding their independent heights.
 
+Tokspam estimates AST depth conservatively from token structure. It may count
+grouping, block nesting, and call structure more heavily than a parser's resulting
+tree. Scores describe structural complexity rather than exact AST height; they are
+not guaranteed upper bounds for every parser.
+
 Reports contain source bytes, cumulative scanned bytes and tokens, largest token,
 lexical context depth, indentation depth, estimated parser and AST depths,
-quoted-annotation depth, and maximum argument, parameter, display, slice, and
-interpolation-field counts. Lexical context depth includes string and replacement
-field modes as well as brackets.
+quoted-annotation depth, and maximum argument, parameter, display, slice,
+interpolation-field, Boolean-operand, `with`-item, and comprehension-filter
+counts. Lexical context depth includes string and replacement field modes as
+well as brackets.
 
 Quoted types are scanned using an explicit work stack. A child scan inherits its
 parent's remaining structural budget, and its tokens and bytes contribute to the
 same cumulative work count. `Literal` values and `Annotated` metadata are excluded
 using lexical names. Escaped plain annotation strings are decoded into reusable
 scratch before scanning their values; ordinary literals remain source slices.
-Tokspam does not resolve aliases. Named Unicode escapes (`\N{...}`) and isolated
-surrogates stop annotation measurement explicitly with `AnnotationEscape`.
+Tokspam does not resolve names or follow assignments. A type checker can treat a
+string as a type through a type alias or an indirect `cast` call, while Tokspam
+sees an ordinary string. Scanning every string would also count data such as
+JSON as Python syntax. If a quoted annotation's contents are lexically invalid,
+its child scan ends and scanning resumes in the enclosing source. A valid
+string such as `"it's"` need not contain a valid type expression. Work already
+charged and observed scores remain counted; resource and structural limit failures
+still stop the check. Named Unicode escapes (`\N{...}`) and isolated surrogates
+stop annotation measurement explicitly with `AnnotationEscape`.
 
 These scores describe Tokspam's lexical model. Tokspam does not validate full
 Python syntax, execute source, or guarantee that a particular parser will handle
@@ -107,4 +120,5 @@ their results apply to the tested revisions, versions, and conditions.
 
 See [configuration](docs/CONFIGURATION.md), [score definitions](docs/LIMITS.md),
 [implementation](docs/INTERNALS.md), and [safety requirements](docs/SAFETY.md).
+The [wide-expression comparison](https://github.com/jaheba/tokspam-fuzzer/blob/wide-expression-limits/campaigns/2026-10-26-wide-expressions/SUMMARY.md) records the measured thresholds and scan cost.
 The [browser demo](https://jaheba.github.io/tokspam/) demonstrates limit checking.

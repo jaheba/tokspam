@@ -336,6 +336,7 @@ fn scan_tokens<
                         .unwrap_or(usize::MAX)
                         .saturating_sub(tokens_used),
                     limits.max_token_bytes,
+                    limits.wide_expressions_enabled(),
                 ) {
                     tokens_used += count;
                     if work_exceeded(bytes_scanned, tokens_used, limits.max_work_units) {
@@ -430,6 +431,11 @@ fn scan_tokens<
                 _ => None,
             };
             if let Some(reason) = lexical_reason {
+                // Invalid type text does not invalidate its enclosing string.
+                // Finish only this annotation; storage and budget stops still reject.
+                if reason == Reason::LexicalStructure && current.annotation_source {
+                    break None;
+                }
                 return Err(current.rejection(reason, &token.range));
             }
             // Collection always needs widths. Checking compiles tracking out
@@ -453,12 +459,16 @@ fn scan_tokens<
                     let ast_remaining = current
                         .ast_budget
                         .map(|budget| budget.saturating_sub(scanner.ast_total));
-                    let minimum = remaining.min(ast_remaining.unwrap_or(remaining));
+                    // Reinterpreting a string adds a type-expression layer above
+                    // its contents, independently of the leaf's zero-based score.
+                    let minimum = remaining
+                        .min(ast_remaining.map_or(remaining, |depth| depth.saturating_sub(1)));
                     // Without decoding or expansion, byte length bounds the
                     // possible structural depth. Skip short contents only when
                     // no other requested threshold needs their tokens or levels.
                     if COLLECT
                         || contents.len() > minimum
+                        || ast_remaining == Some(0)
                         || limits.max_annotation_depth.is_some()
                         || limits.max_tokens.is_some()
                         || limits.max_work_units.is_some()
@@ -471,9 +481,15 @@ fn scan_tokens<
                             scores.annotation_depth =
                                 scores.annotation_depth.max(current.depth + 1);
                         }
+                        if COLLECT {
+                            scores.ast_depth = scores
+                                .ast_depth
+                                .max(current.ast_offset + scanner.ast_total + 1);
+                        }
                         if limits
                             .max_annotation_depth
                             .is_some_and(|limit| current.depth >= limit)
+                            || ast_remaining == Some(0)
                         {
                             return Err(current.rejection(Reason::QuotedAnnotation, &token.range));
                         }
@@ -494,14 +510,14 @@ fn scan_tokens<
                         child = Some(ScanFrame {
                             source: current.absolute_range(&contents),
                             budget: remaining,
-                            ast_budget: ast_remaining,
+                            ast_budget: ast_remaining.map(|depth| depth - 1),
                             annotation_source: true,
                             decoded: current.decoded,
                             needs_decode: token.needs_decode,
                             decoded_mark: None,
                             depth: current.depth + 1,
                             parser_offset: current.parser_offset + scanner.total,
-                            ast_offset: current.ast_offset + scanner.ast_total,
+                            ast_offset: current.ast_offset + scanner.ast_total + 1,
                             lexer: None,
                             saved: None,
                             region_start: true,

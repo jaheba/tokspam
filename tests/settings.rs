@@ -121,11 +121,9 @@ fn nested_annotation_work_stack_obeys_depth_and_reports_outer_string() {
 }
 
 #[test]
-fn malformed_nested_annotation_is_mapped_to_the_outer_string() {
+fn malformed_nested_annotation_does_not_invalidate_outer_source() {
     let source = format!("x: \"list['{}']\"", "([)]".repeat(30));
-    let rejection = check(&source, &Limits::screening()).unwrap_err();
-    assert_eq!(rejection.reason, Reason::LexicalStructure);
-    assert_eq!(rejection.range, 3..source.len());
+    assert!(check(&source, &Limits::screening()).is_ok());
 }
 
 #[test]
@@ -208,6 +206,9 @@ fn chained_calls_and_subscripts_retain_ast_depth() {
 fn prose_strings_are_not_forward_annotations() {
     let prose = format!("x = \"\"\"{}don't\"\"\"", "word ".repeat(20));
     assert!(check(&prose, &Limits::screening()).is_ok());
+    let json = format!("{{\"items\": {}0{}}}", "[".repeat(300), "]".repeat(300));
+    let json_source = format!("payload = r'''{json}'''\n");
+    assert!(check(&json_source, &Limits::screening()).is_ok());
     assert!(check(&format!("x = '{}'", "(".repeat(101)), &Limits::screening()).is_ok());
     assert!(
         check(
@@ -531,10 +532,7 @@ fn annotation_segments_preserve_parent_state_and_recover_after_child_errors() {
             checker.check(&parent_width).unwrap_err().reason,
             Reason::SliceItems
         );
-        assert_eq!(
-            checker.check(&child_error).unwrap_err().reason,
-            Reason::LexicalStructure
-        );
+        assert!(checker.check(&child_error).is_ok());
         assert_eq!(
             checker.check(&parent_depth).unwrap_err().reason,
             Reason::AstDepth

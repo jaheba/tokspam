@@ -21,6 +21,9 @@ pub struct Limits {
     pub max_display_items: Option<usize>,
     pub max_slice_items: Option<usize>,
     pub max_interpolation_fields: Option<usize>,
+    pub max_boolean_operands: Option<usize>,
+    pub max_with_items: Option<usize>,
+    pub max_comprehension_filters: Option<usize>,
 }
 
 impl Limits {
@@ -36,6 +39,9 @@ impl Limits {
             max_annotation_depth: Some(8),
             check_string_annotations: true,
             max_ast_depth: Some(100),
+            max_boolean_operands: Some(4_096),
+            max_with_items: Some(1_024),
+            max_comprehension_filters: Some(8_192),
             ..Self::default()
         }
     }
@@ -47,6 +53,16 @@ impl Limits {
             || self.max_display_items.is_some()
             || self.max_slice_items.is_some()
             || self.max_interpolation_fields.is_some()
+            || self.max_boolean_operands.is_some()
+            || self.max_with_items.is_some()
+            || self.max_comprehension_filters.is_some()
+    }
+
+    #[inline]
+    pub(crate) fn wide_expressions_enabled(&self) -> bool {
+        self.max_boolean_operands.is_some()
+            || self.max_with_items.is_some()
+            || self.max_comprehension_filters.is_some()
     }
 }
 
@@ -68,6 +84,9 @@ impl Default for Limits {
             max_display_items: None,
             max_slice_items: None,
             max_interpolation_fields: None,
+            max_boolean_operands: None,
+            max_with_items: None,
+            max_comprehension_filters: None,
         }
     }
 }

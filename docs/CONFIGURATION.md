@@ -21,6 +21,11 @@ safety guarantee.
 rescans from both measurements and checking. Scores still include the outer string
 as an ordinary token.
 
+The screening policy also enables limits of 4096 Boolean operands, 1024 `with`
+items, and 8192 comprehension filters per generator. Each is independent of
+nesting depth and of the total token/work budgets. Set a field to `None` to
+disable that width limit.
+
 ## Storage policy
 
 `Storage::Growing` uses fallible geometric reservation. Allocated memory depends on

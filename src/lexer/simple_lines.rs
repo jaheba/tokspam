@@ -11,6 +11,7 @@ impl Lexer<'_, '_> {
         max_bytes: usize,
         max_tokens: usize,
         max_token_bytes: Option<usize>,
+        check_wide_expressions: bool,
     ) -> Option<usize> {
         let bytes = self.source.as_bytes();
         let mut position = self.position;
@@ -48,7 +49,10 @@ impl Lexer<'_, '_> {
                     }
                     // These keywords either retain cross-line state or add
                     // multiple frames, invalidating the simple byte bound.
-                    if matches!(&bytes[token_start..position], b"lambda" | b"elif" | b"else") {
+                    if matches!(&bytes[token_start..position], b"lambda" | b"elif" | b"else")
+                        || check_wide_expressions
+                            && matches!(&bytes[token_start..position], b"and" | b"or" | b"with")
+                    {
                         return None;
                     }
                     false

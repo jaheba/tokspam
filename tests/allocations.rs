@@ -115,6 +115,9 @@ fn source_cannot_change_allocation_count_or_size() {
             "word ".repeat(30)
         ),
         format!("x: tuple[int, \"list['{}']\"]", "([)]".repeat(30)),
+        format!("x = {}", vec!["True"; 4_097].join(" or ")),
+        format!("with {}: pass", vec!["cm"; 1_025].join(", ")),
+        format!("x = [0 for x in xs{}]", " if x".repeat(8_193)),
     ];
 
     for limits in [
