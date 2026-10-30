@@ -138,7 +138,8 @@ function restoreDefaultLimits() {
   limitInputs.forEach((input, index) => {
     const unit = index === 0 ? 1024 : 1;
     input.value = wasm.demo_setting_default(index) / unit;
-    input.max = wasm.demo_setting_maximum(index) / unit;
+    // Wasm i32 results arrive signed; restore the u32 maximum before converting bytes to KiB.
+    input.max = Math.floor((wasm.demo_setting_maximum(index) >>> 0) / unit);
     input.disabled = false;
   });
   defaultSettings = limitInputs.map((input, index) => input.valueAsNumber * (index === 0 ? 1024 : 1));
