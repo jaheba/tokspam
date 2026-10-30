@@ -5,6 +5,7 @@ const reasonNames = [
   "AST depth", "Lexical structure", "Quoted annotation", "Storage",
   "Call arguments", "Parameters", "Display items", "Slice items",
   "Interpolation fields", "Inconclusive", "Accounting overflow", "Invalid UTF-8", "Lexical depth", "Annotation escape",
+  "Boolean operands", "With items", "Comprehension filters",
 ];
 
 const validationDetails = {
@@ -27,6 +28,9 @@ const validationDetails = {
   14: ["Interpolation field count", "A string contained more interpolation fields than its configured budget."],
   15: ["Incomplete screening", "Tokspam stopped without confirming a structural violation. A work budget or bounded tracker may have been exhausted."],
   17: ["UTF-8 input", "The input was not valid UTF-8."],
+  20: ["Boolean operand count", "A Boolean expression contained more operands than its configured budget."],
+  21: ["With item count", "A with statement contained more items than its configured budget."],
+  22: ["Comprehension filter count", "A comprehension contained more filters than its configured budget."],
 };
 
 const source = document.querySelector("#source");

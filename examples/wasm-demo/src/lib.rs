@@ -127,6 +127,9 @@ pub extern "C" fn demo_default_limit(reason: u32) -> u32 {
         12 => limits.max_display_items.unwrap_or(0) as u32,
         13 => limits.max_slice_items.unwrap_or(0) as u32,
         14 => limits.max_interpolation_fields.unwrap_or(0) as u32,
+        20 => limits.max_boolean_operands.unwrap_or(0) as u32,
+        21 => limits.max_with_items.unwrap_or(0) as u32,
+        22 => limits.max_comprehension_filters.unwrap_or(0) as u32,
         _ => 0,
     }
 }
@@ -155,6 +158,9 @@ fn reason_code(reason: Reason) -> u32 {
         Reason::DisplayItems => 12,
         Reason::SliceItems => 13,
         Reason::InterpolationFields => 14,
+        Reason::BooleanOperands => 20,
+        Reason::WithItems => 21,
+        Reason::ComprehensionFilters => 22,
         Reason::Inconclusive => 15,
     }
 }
